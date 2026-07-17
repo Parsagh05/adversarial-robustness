@@ -1,0 +1,80 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter temporary files
+.ipynb_checkpoints/
+
+# IDE and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Datasets and mounted data
+data/
+datasets/
+mvtec_anomaly_detection/
+
+# Model checkpoints and downloaded weights
+checkpoints/
+weights/
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+
+# Generated experiment outputs
+outputs/
+results/
+anomalyclip_adversarial_*/
+anomalyclip_thresholds_*/
+partial/
+predictions/
+perturbations/
+adversarial_examples/
+diagnostics/
+clean_metrics/
+summary.csv
+per_image.csv
+clean_predictions.npz
+normal_train_scores.npz
+category_thresholds.json
+completed_conditions.json
+
+# Packaged outputs and large generated arrays
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.npy
+*.npz
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+~$*
