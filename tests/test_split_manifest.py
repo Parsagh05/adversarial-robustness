@@ -181,7 +181,6 @@ class SplitManifestTests(unittest.TestCase):
                 use_split_manifest=True,
                 split_manifest_csv=str(csv_path),
                 split_manifest_json=str(json_path),
-                resume=False,
                 attack=AttackConfig(scopes=("dataset",)),
             )
             experiment = AdversarialExperiment(config)

@@ -120,7 +120,6 @@ class ExperimentConfig:
     use_split_manifest: bool = False
     split_manifest_csv: Optional[str] = None
     split_manifest_json: Optional[str] = None
-    resume: bool = True
     attack: AttackConfig = field(default_factory=AttackConfig)
     target_kwargs: Dict[str, Any] = field(default_factory=dict)
 

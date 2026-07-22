@@ -227,7 +227,6 @@ With a manifest, `max_samples_per_category` is a strict upper bound. The loader 
 ```text
 output_root/
 |-- config.json
-|-- completed_conditions.json
 |-- category_thresholds.json
 |-- normal_train_scores.npz
 |-- clean_predictions.npz
@@ -244,8 +243,7 @@ output_root/
 |   |-- optimization.json
 |   |-- loss_curve.csv
 |   `-- surrogate_predictions.csv
-|-- adversarial_examples/<condition>/
-`-- partial/<condition>/
+`-- adversarial_examples/<condition>/
 ```
 
 - `summary.csv` is the main result table. It contains one row per category plus a `__macro__` row for each condition.
@@ -253,8 +251,6 @@ output_root/
 - `target_outputs.npz` stores the evaluated sample IDs, labels, clean/adversarial scores, and low-resolution anomaly maps for later metric auditing.
 - `optimization.json`, `loss_curve.csv`, and `surrogate_predictions.csv` diagnose whether optimization succeeded on the surrogate. They are not AnomalyCLIP target results.
 - Universal perturbations and representative adversarial examples are saved when enabled.
-
-Runs are resumable. Completed conditions are skipped, while active-condition partial predictions are refreshed periodically. Resume is rejected if the requested configuration differs from the existing `config.json`, preventing results from incompatible settings from being mixed.
 
 ## Project structure
 

@@ -68,7 +68,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-manifest-json")
     parser.add_argument("--save-adversarial-examples", type=int, default=0)
     parser.add_argument("--no-lpips", action="store_true")
-    parser.add_argument("--no-resume", action="store_true")
     return parser.parse_args()
 
 
@@ -111,7 +110,6 @@ def main() -> None:
         use_split_manifest=args.use_split_manifest,
         split_manifest_csv=args.split_manifest_csv,
         split_manifest_json=args.split_manifest_json,
-        resume=not args.no_resume,
         attack=attack,
     )
     run_experiment(config)

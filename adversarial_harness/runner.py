@@ -172,13 +172,6 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, object]], fields: Sequenc
     temporary.replace(path)
 
 
-def _read_csv(path: Path) -> List[Dict[str, str]]:
-    if not path.exists():
-        return []
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        return list(csv.DictReader(handle))
-
-
 def _condition(scope: str, direction: str, mode: str) -> str:
     return f"{scope}__{direction}__{mode}"
 
@@ -264,19 +257,16 @@ class AdversarialExperiment:
         self.config = config
         self.output = config.output_path.resolve()
         self.output.mkdir(parents=True, exist_ok=True)
+        legacy_completion = self.output / "completed_conditions.json"
+        if legacy_completion.is_file():
+            legacy_completion.unlink()
+        legacy_partial = self.output / "partial"
+        if legacy_partial.is_dir():
+            shutil.rmtree(legacy_partial)
         self.summary_path = self.output / "summary.csv"
         self.detail_path = self.output / "per_image.csv"
-        self.completion_path = self.output / "completed_conditions.json"
-        self.summary_rows: List[Dict[str, object]] = (
-            list(_read_csv(self.summary_path)) if config.resume else []
-        )
-        self.detail_rows: List[Dict[str, object]] = (
-            list(_read_csv(self.detail_path)) if config.resume else []
-        )
-        if config.resume and self.completion_path.exists():
-            self.completed = set(json.loads(self.completion_path.read_text(encoding="utf-8")))
-        else:
-            self.completed = set()
+        self.summary_rows: List[Dict[str, object]] = []
+        self.detail_rows: List[Dict[str, object]] = []
         self.target = None
         self.surrogate = None
         self.category_thresholds: Dict[str, float] = {}
@@ -596,7 +586,6 @@ class AdversarialExperiment:
         self,
         train_good_samples: Sequence[MVTecSample],
         categories: Sequence[str],
-        force: bool = False,
     ) -> Path:
         output_path = self.output / "category_thresholds.json"
         if self.config.thresholds_path:
@@ -616,13 +605,6 @@ class AdversarialExperiment:
                 shutil.copy2(source_scores, destination_scores)
             print(f"[threshold] Loaded frozen category thresholds from {source_path}")
             return output_path
-        if self.config.resume and output_path.is_file() and not force:
-            payload = json.loads(output_path.read_text(encoding="utf-8"))
-            self.category_thresholds = self._validate_threshold_payload(
-                payload, categories, output_path
-            )
-            print(f"[resume] Loading category thresholds from {output_path}")
-            return output_path
         self.category_thresholds = self._calibrate_category_thresholds(
             train_good_samples, output_path
         )
@@ -633,16 +615,6 @@ class AdversarialExperiment:
         self, samples: Sequence[MVTecSample]
     ) -> tuple[np.ndarray, np.ndarray]:
         cache = self.output / "clean_predictions.npz"
-        if self.config.resume and cache.exists():
-            stored = np.load(cache, allow_pickle=False)
-            expected_ids = np.asarray([sample.sample_id for sample in samples])
-            if (
-                "sample_ids" in stored.files
-                and len(stored["scores"]) == len(samples)
-                and np.array_equal(stored["sample_ids"], expected_ids)
-            ):
-                print(f"[resume] Loading clean target predictions from {cache}")
-                return stored["scores"], stored["lowres_maps"]
         scores = np.zeros(len(samples), dtype=np.float32)
         maps: List[np.ndarray] = [None] * len(samples)  # type: ignore[list-item]
         batches = list(_batches(samples, self.config.target_batch_size))
@@ -701,9 +673,6 @@ class AdversarialExperiment:
         cache_key: str = "full_test",
     ) -> Dict[str, Dict[str, float]]:
         metrics_path = self.output / "clean_metrics" / f"{_safe_name(cache_key)}.json"
-        if self.config.resume and metrics_path.exists():
-            print(f"[resume] Loading clean metrics from {metrics_path}")
-            return json.loads(metrics_path.read_text(encoding="utf-8"))
         result = {}
         for category, category_samples in tqdm(
             grouped.items(),
@@ -944,50 +913,11 @@ class AdversarialExperiment:
         adversarial_maps = clean_maps.copy()
         details: List[Dict[str, object]] = []
         condition = _condition(scope, direction, mode)
-        processed_indices: set[int] = set()
-        evaluation_calls = 0
-        partial_dir = self.output / "partial" / condition
         diagnostics_dir = self.output / "diagnostics" / condition
         universal_deltas: Dict[str, torch.Tensor] = {}
-        optimization_path = diagnostics_dir / "optimization.json"
-        loss_path = diagnostics_dir / "loss_curve.csv"
-        surrogate_path = diagnostics_dir / "surrogate_predictions.csv"
         optimization_groups: List[Dict[str, object]] = []
-        if self.config.resume and optimization_path.is_file():
-            saved_optimization = json.loads(
-                optimization_path.read_text(encoding="utf-8")
-            )
-            optimization_groups = list(saved_optimization.get("groups", []))
-        loss_rows: List[Dict[str, object]] = (
-            list(_read_csv(loss_path)) if self.config.resume else []
-        )
-        surrogate_rows: List[Dict[str, object]] = (
-            list(_read_csv(surrogate_path)) if self.config.resume else []
-        )
-
-        partial_outputs = partial_dir / "target_outputs_partial.npz"
-        partial_details = partial_dir / "per_image_partial.csv"
-        if self.config.resume and partial_outputs.is_file() and partial_details.is_file():
-            with np.load(partial_outputs, allow_pickle=False) as stored:
-                indices = np.asarray(stored["indices"], dtype=np.int64)
-                stored_scores = np.asarray(stored["adversarial_scores"])
-                stored_maps = np.asarray(stored["adversarial_lowres_maps"])
-            valid_indices = {sample.index for sample in evaluation_source_samples}
-            saved_details = list(_read_csv(partial_details))
-            if (
-                len(indices) == len(saved_details)
-                and len(indices) == len(set(indices.tolist()))
-                and set(indices.tolist()).issubset(valid_indices)
-            ):
-                adversarial_scores[indices] = stored_scores
-                adversarial_maps[indices] = stored_maps
-                processed_indices.update(int(index) for index in indices)
-                details.extend(saved_details)
-                print(
-                    f"[resume] Restored {len(indices)}/"
-                    f"{len(evaluation_source_samples)} attacked target predictions "
-                    f"for {condition}"
-                )
+        loss_rows: List[Dict[str, object]] = []
+        surrogate_rows: List[Dict[str, object]] = []
 
         _write_json(
             diagnostics_dir / "data_split.json",
@@ -1048,25 +978,11 @@ class AdversarialExperiment:
             },
         )
 
-        def save_partial() -> None:
-            if not processed_indices:
-                return
-            partial_dir.mkdir(parents=True, exist_ok=True)
-            indices = np.asarray(sorted(processed_indices), dtype=np.int64)
-            np.savez_compressed(
-                partial_dir / "target_outputs_partial.npz",
-                indices=indices,
-                adversarial_scores=adversarial_scores[indices],
-                adversarial_lowres_maps=adversarial_maps[indices],
-            )
-            _write_csv(partial_dir / "per_image_partial.csv", details, DETAIL_FIELDS)
-
         def evaluate_batch(
             batch_samples: Sequence[MVTecSample],
             clean: torch.Tensor,
             attacked: torch.Tensor,
         ) -> None:
-            nonlocal evaluation_calls
             scores, maps = self.target.predict(attacked.detach())
             linf, ssim, lpips_values = perceptual_metrics(
                 clean.detach(), attacked.detach(), lpips_metric
@@ -1074,7 +990,6 @@ class AdversarialExperiment:
             for position, sample in enumerate(batch_samples):
                 adversarial_scores[sample.index] = scores[position]
                 adversarial_maps[sample.index] = maps[position]
-                processed_indices.add(sample.index)
                 decision_threshold = self.category_thresholds[sample.category]
                 clean_prediction = int(
                     clean_scores[sample.index] >= decision_threshold
@@ -1121,19 +1036,10 @@ class AdversarialExperiment:
                         "lpips": float(lpips_values[position]),
                     }
                 )
-            evaluation_calls += 1
-            if evaluation_calls % 25 == 0:
-                save_partial()
-
         if scope == "per_image":
-            remaining_evaluation_samples = [
-                sample
-                for sample in evaluation_source_samples
-                if sample.index not in processed_indices
-            ]
             batches = list(
                 _batches(
-                    remaining_evaluation_samples,
+                    evaluation_source_samples,
                     self.config.attack.per_image_batch_size,
                 )
             )
@@ -1180,13 +1086,6 @@ class AdversarialExperiment:
             )
             for group_name, group_fit_samples in group_progress:
                 group_evaluation_samples = evaluation_groups[group_name]
-                perturbation_path = (
-                    self.output
-                    / "perturbations"
-                    / condition
-                    / f"{_safe_name(group_name)}.pt"
-                )
-                attack_result = None
                 group_progress.set_postfix_str(
                     (
                         f"{group_name}: fit={len(group_fit_samples)}, "
@@ -1194,151 +1093,72 @@ class AdversarialExperiment:
                     ),
                     refresh=False,
                 )
-                delta = None
-                if self.config.resume and perturbation_path.is_file():
-                    try:
-                        saved_delta = torch.load(
-                            perturbation_path,
-                            map_location="cpu",
-                            weights_only=True,
-                        )
-                    except TypeError:
-                        saved_delta = torch.load(
-                            perturbation_path, map_location="cpu"
-                        )
-                    expected_fit_ids = [
-                        sample.protocol_id for sample in group_fit_samples
-                    ]
-                    expected_evaluation_ids = [
-                        sample.protocol_id for sample in group_evaluation_samples
-                    ]
-                    if (
-                        saved_delta.get("scope") == scope
-                        and saved_delta.get("direction") == direction
-                        and saved_delta.get("loss_mode") == mode
-                        and saved_delta.get("group") == group_name
-                        and np.isclose(
-                            float(saved_delta.get("epsilon", float("nan"))),
-                            self.config.attack.epsilon,
-                        )
-                        and saved_delta.get("fit_sample_ids") == expected_fit_ids
-                        and saved_delta.get("evaluation_sample_ids")
-                        == expected_evaluation_ids
-                    ):
-                        delta = saved_delta["delta"].to(
-                            self.config.device, dtype=torch.float32
-                        )
-                        tqdm.write(
-                            f"[resume] Restored universal perturbation for "
-                            f"{condition}/{group_name}"
+                with tqdm(
+                    total=self.config.attack.universal_steps,
+                    desc=f"Universal PGD [{group_name}]",
+                    unit="step",
+                    dynamic_ncols=True,
+                    leave=False,
+                ) as optimization_progress:
+
+                    def report(step: int, total: int, loss: float) -> None:
+                        optimization_progress.update(step - optimization_progress.n)
+                        optimization_progress.set_postfix(
+                            targeted_loss=f"{loss:.6f}", refresh=False
                         )
 
-                if delta is None:
-                    with tqdm(
-                        total=self.config.attack.universal_steps,
-                        desc=f"Universal PGD [{group_name}]",
-                        unit="step",
-                        dynamic_ncols=True,
-                        leave=False,
-                    ) as optimization_progress:
-
-                        def report(step: int, total: int, loss: float) -> None:
-                            optimization_progress.update(step - optimization_progress.n)
-                            optimization_progress.set_postfix(
-                                targeted_loss=f"{loss:.6f}", refresh=False
-                            )
-
-                        attack_result = attacker.optimize_universal(
-                            group_fit_samples,
-                            self.image_loader,
-                            target_label,
-                            mode,
-                            diagnostic_samples=self._diagnostic_subset(
-                                group_fit_samples
-                            ),
-                            progress=report,
-                        )
-                    delta = attack_result.delta
-                    optimization_groups = [
-                        row
-                        for row in optimization_groups
-                        if row.get("group") != group_name
-                    ]
-                    loss_rows = [
-                        row for row in loss_rows if row.get("group") != group_name
-                    ]
-                    surrogate_rows = [
-                        row
-                        for row in surrogate_rows
-                        if row.get("group") != group_name
-                    ]
-                    group_surrogate_rows = self._surrogate_transfer_rows(
-                        attacker,
-                        group_evaluation_samples,
-                        delta,
+                    attack_result = attacker.optimize_universal(
+                        group_fit_samples,
+                        self.image_loader,
                         target_label,
                         mode,
-                        condition,
-                        group_name,
+                        diagnostic_samples=self._diagnostic_subset(group_fit_samples),
+                        progress=report,
                     )
-                    surrogate_rows.extend(group_surrogate_rows)
-                    optimization_groups.append(
-                        {
-                            "group": group_name,
-                            "fit_count": len(group_fit_samples),
-                            "evaluation_count": len(group_evaluation_samples),
-                            "diagnostic_sample_ids": (
-                                attack_result.diagnostic_sample_ids
-                            ),
-                            "initial_losses": attack_result.initial_losses,
-                            "final_losses": attack_result.final_losses,
-                            "loss_reduction": {
-                                key: attack_result.initial_losses[key]
-                                - attack_result.final_losses[key]
-                                for key in attack_result.initial_losses
-                                if key in attack_result.final_losses
-                            },
-                            "surrogate_targeted_success_rate": (
-                                float(
-                                    np.mean(
-                                        [
-                                            int(row["surrogate_targeted_success"])
-                                            for row in group_surrogate_rows
-                                        ]
-                                    )
-                                )
-                                if group_surrogate_rows
-                                else float("nan")
-                            ),
-                        }
-                    )
-                    loss_rows.extend(
-                        {"group": group_name, **history_row}
-                        for history_row in attack_result.history
-                    )
-                universal_deltas[group_name] = delta.detach().cpu().float()
-                # Persist after every universal group so completed optimization
-                # diagnostics survive an interruption during target inference.
-                _write_json(
-                    diagnostics_dir / "optimization.json",
+                delta = attack_result.delta
+                group_surrogate_rows = self._surrogate_transfer_rows(
+                    attacker,
+                    group_evaluation_samples,
+                    delta,
+                    target_label,
+                    mode,
+                    condition,
+                    group_name,
+                )
+                surrogate_rows.extend(group_surrogate_rows)
+                optimization_groups.append(
                     {
-                        "condition": condition,
-                        "target_label": target_label,
-                        "global_weight": self.config.attack.global_weight,
-                        "local_weight": self.config.attack.local_weight,
-                        "groups": optimization_groups,
-                    },
+                        "group": group_name,
+                        "fit_count": len(group_fit_samples),
+                        "evaluation_count": len(group_evaluation_samples),
+                        "diagnostic_sample_ids": attack_result.diagnostic_sample_ids,
+                        "initial_losses": attack_result.initial_losses,
+                        "final_losses": attack_result.final_losses,
+                        "loss_reduction": {
+                            key: attack_result.initial_losses[key]
+                            - attack_result.final_losses[key]
+                            for key in attack_result.initial_losses
+                            if key in attack_result.final_losses
+                        },
+                        "surrogate_targeted_success_rate": (
+                            float(
+                                np.mean(
+                                    [
+                                        int(row["surrogate_targeted_success"])
+                                        for row in group_surrogate_rows
+                                    ]
+                                )
+                            )
+                            if group_surrogate_rows
+                            else float("nan")
+                        ),
+                    }
                 )
-                _write_csv(
-                    diagnostics_dir / "loss_curve.csv",
-                    loss_rows,
-                    LOSS_CURVE_FIELDS,
+                loss_rows.extend(
+                    {"group": group_name, **history_row}
+                    for history_row in attack_result.history
                 )
-                _write_csv(
-                    diagnostics_dir / "surrogate_predictions.csv",
-                    surrogate_rows,
-                    SURROGATE_FIELDS,
-                )
+                universal_deltas[group_name] = delta.detach().cpu().float()
                 if self.config.save_universal_perturbations:
                     perturbation_path = (
                         self.output
@@ -1366,16 +1186,8 @@ class AdversarialExperiment:
                         },
                         perturbation_path,
                     )
-                remaining_evaluation_samples = [
-                    sample
-                    for sample in group_evaluation_samples
-                    if sample.index not in processed_indices
-                ]
                 batches = list(
-                    _batches(
-                        remaining_evaluation_samples,
-                        self.config.target_batch_size,
-                    )
+                    _batches(group_evaluation_samples, self.config.target_batch_size)
                 )
                 for batch in tqdm(
                     batches,
@@ -1387,9 +1199,7 @@ class AdversarialExperiment:
                     clean = torch.stack([self.image_loader(sample) for sample in batch])
                     attacked = attacker.apply_universal(clean, delta)
                     evaluate_batch(batch, clean, attacked)
-                del delta
-                if attack_result is not None:
-                    del attack_result
+                del delta, attack_result
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             _write_json(
@@ -1412,9 +1222,6 @@ class AdversarialExperiment:
                 surrogate_rows,
                 SURROGATE_FIELDS,
             )
-            # Persist all predictions before optional visualization work so a
-            # rendering failure can resume without repeating target inference.
-            save_partial()
             self._save_representative_examples(
                 evaluation_source_samples,
                 details,
@@ -1424,7 +1231,6 @@ class AdversarialExperiment:
                 scope,
                 condition,
             )
-        save_partial()
         return adversarial_scores, adversarial_maps, details
 
     def _summaries(
@@ -1607,13 +1413,6 @@ class AdversarialExperiment:
             requested_config["split_manifest_runtime_counts"] = (
                 self.split_manifest_metadata.get("runtime_counts", {})
             )
-        if self.config.resume and config_path.exists():
-            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
-            if existing_config != requested_config:
-                raise ValueError(
-                    "The existing output directory was created with a different "
-                    "configuration. Use a new output_root or set resume=False."
-                )
         _write_json(config_path, requested_config)
         if self.config.use_split_manifest:
             snapshot_dir = self.output / "split_manifest"
@@ -1698,9 +1497,6 @@ class AdversarialExperiment:
             for direction, mode, scope in condition_progress:
                 condition = _condition(scope, direction, mode)
                 condition_progress.set_postfix_str(condition, refresh=True)
-                if self.config.resume and condition in self.completed:
-                    tqdm.write(f"[resume] Skipping completed condition: {condition}")
-                    continue
                 tqdm.write("=" * 80)
                 tqdm.write(f"[condition] {condition}")
                 started = time.time()
@@ -1793,15 +1589,6 @@ class AdversarialExperiment:
                     clean_lowres_maps=clean_maps[evaluation_indices],
                     adversarial_lowres_maps=adversarial_maps[evaluation_indices],
                 )
-                partial_dir = self.output / "partial" / condition
-                for partial_file in (
-                    partial_dir / "target_outputs_partial.npz",
-                    partial_dir / "per_image_partial.csv",
-                ):
-                    if partial_file.exists():
-                        partial_file.unlink()
-                if partial_dir.exists():
-                    partial_dir.rmdir()
                 self.summary_rows = [
                     row for row in self.summary_rows if row.get("condition") != condition
                 ] + summaries
@@ -1810,8 +1597,6 @@ class AdversarialExperiment:
                 ] + details
                 _write_csv(self.summary_path, self.summary_rows, SUMMARY_FIELDS)
                 _write_csv(self.detail_path, self.detail_rows, DETAIL_FIELDS)
-                self.completed.add(condition)
-                _write_json(self.completion_path, sorted(self.completed))
                 tqdm.write(
                     f"[condition] completed {condition} in "
                     f"{(time.time() - started) / 60.0:.1f} minutes"
@@ -1834,7 +1619,7 @@ def run_experiment(config: ExperimentConfig) -> Path:
     return AdversarialExperiment(config).run()
 
 
-def calibrate_thresholds(config: ExperimentConfig, force: bool = False) -> Path:
+def calibrate_thresholds(config: ExperimentConfig) -> Path:
     """Calibrate reusable category thresholds without loading the surrogate."""
 
     if config.thresholds_path:
@@ -1863,9 +1648,7 @@ def calibrate_thresholds(config: ExperimentConfig, force: bool = False) -> Path:
     )
     experiment._load_target()
     try:
-        return experiment._prepare_category_thresholds(
-            train_good_samples, categories, force=force
-        )
+        return experiment._prepare_category_thresholds(train_good_samples, categories)
     finally:
         if experiment.target is not None:
             experiment.target.release()
