@@ -1,0 +1,139 @@
+{
+  "balancing_strategy": "match_smaller_label_count_per_category_then_even_50_50",
+  "categories": [
+    "candle",
+    "capsules",
+    "cashew",
+    "chewinggum",
+    "fryum",
+    "macaroni1",
+    "macaroni2",
+    "pcb1",
+    "pcb2",
+    "pcb3",
+    "pcb4",
+    "pipe_fryum"
+  ],
+  "category_counts": {
+    "candle": {
+      "available_anomaly": 100,
+      "available_normal": 100,
+      "evaluation_anomaly": 50,
+      "evaluation_normal": 50,
+      "excluded_balance": 0,
+      "fit_anomaly": 50,
+      "fit_normal": 50
+    },
+    "capsules": {
+      "available_anomaly": 100,
+      "available_normal": 60,
+      "evaluation_anomaly": 30,
+      "evaluation_normal": 30,
+      "excluded_balance": 40,
+      "fit_anomaly": 30,
+      "fit_normal": 30
+    },
+    "cashew": {
+      "available_anomaly": 100,
+      "available_normal": 50,
+      "evaluation_anomaly": 25,
+      "evaluation_normal": 25,
+      "excluded_balance": 50,
+      "fit_anomaly": 25,
+      "fit_normal": 25
+    },
+    "chewinggum": {
+      "available_anomaly": 100,
+      "available_normal": 50,
+      "evaluation_anomaly": 25,
+      "evaluation_normal": 25,
+      "excluded_balance": 50,
+      "fit_anomaly": 25,
+      "fit_normal": 25
+    },
+    "fryum": {
+      "available_anomaly": 100,
+      "available_normal": 50,
+      "evaluation_anomaly": 25,
+      "evaluation_normal": 25,
+      "excluded_balance": 50,
+      "fit_anomaly": 25,
+      "fit_normal": 25
+    },
+    "macaroni1": {
+      "available_anomaly": 100,
+      "available_normal": 100,
+      "evaluation_anomaly": 50,
+      "evaluation_normal": 50,
+      "excluded_balance": 0,
+      "fit_anomaly": 50,
+      "fit_normal": 50
+    },
+    "macaroni2": {
+      "available_anomaly": 100,
+      "available_normal": 100,
+      "evaluation_anomaly": 50,
+      "evaluation_normal": 50,
+      "excluded_balance": 0,
+      "fit_anomaly": 50,
+      "fit_normal": 50
+    },
+    "pcb1": {
+      "available_anomaly": 100,
+      "available_normal": 100,
+      "evaluation_anomaly": 50,
+      "evaluation_normal": 50,
+      "excluded_balance": 0,
+      "fit_anomaly": 50,
+      "fit_normal": 50
+    },
+    "pcb2": {
+      "available_anomaly": 100,
+      "available_normal": 100,
+      "evaluation_anomaly": 50,
+      "evaluation_normal": 50,
+      "excluded_balance": 0,
+      "fit_anomaly": 50,
+      "fit_normal": 50
+    },
+    "pcb3": {
+      "available_anomaly": 100,
+      "available_normal": 101,
+      "evaluation_anomaly": 50,
+      "evaluation_normal": 50,
+      "excluded_balance": 1,
+      "fit_anomaly": 50,
+      "fit_normal": 50
+    },
+    "pcb4": {
+      "available_anomaly": 100,
+      "available_normal": 101,
+      "evaluation_anomaly": 50,
+      "evaluation_normal": 50,
+      "excluded_balance": 1,
+      "fit_anomaly": 50,
+      "fit_normal": 50
+    },
+    "pipe_fryum": {
+      "available_anomaly": 100,
+      "available_normal": 50,
+      "evaluation_anomaly": 25,
+      "evaluation_normal": 25,
+      "excluded_balance": 50,
+      "fit_anomaly": 25,
+      "fit_normal": 25
+    }
+  },
+  "csv_file": "visa_matched_test_per_category_v1_seed111.csv",
+  "csv_sha256": "a04abc973d613fc4a24ecf06648218d8fb98b0af62a53e1e48938d50448a2790",
+  "dataset": "visa",
+  "dataset_counts": {
+    "visa": 2162
+  },
+  "dataset_description": "VisA official test split",
+  "fit_fraction": 0.5,
+  "protocol_version": "matched_test_per_category_v1",
+  "split_seed": 111,
+  "total_manifest_rows": 2162,
+  "total_selected_rows": 1920
+}

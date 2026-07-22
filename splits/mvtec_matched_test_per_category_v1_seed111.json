@@ -1,0 +1,169 @@
+{
+  "balancing_strategy": "match_smaller_label_count_per_category_then_even_50_50",
+  "categories": [
+    "bottle",
+    "cable",
+    "capsule",
+    "carpet",
+    "grid",
+    "hazelnut",
+    "leather",
+    "metal_nut",
+    "pill",
+    "screw",
+    "tile",
+    "toothbrush",
+    "transistor",
+    "wood",
+    "zipper"
+  ],
+  "category_counts": {
+    "bottle": {
+      "available_anomaly": 63,
+      "available_normal": 20,
+      "evaluation_anomaly": 10,
+      "evaluation_normal": 10,
+      "excluded_balance": 43,
+      "fit_anomaly": 10,
+      "fit_normal": 10
+    },
+    "cable": {
+      "available_anomaly": 92,
+      "available_normal": 58,
+      "evaluation_anomaly": 29,
+      "evaluation_normal": 29,
+      "excluded_balance": 34,
+      "fit_anomaly": 29,
+      "fit_normal": 29
+    },
+    "capsule": {
+      "available_anomaly": 109,
+      "available_normal": 23,
+      "evaluation_anomaly": 11,
+      "evaluation_normal": 11,
+      "excluded_balance": 88,
+      "fit_anomaly": 11,
+      "fit_normal": 11
+    },
+    "carpet": {
+      "available_anomaly": 89,
+      "available_normal": 28,
+      "evaluation_anomaly": 14,
+      "evaluation_normal": 14,
+      "excluded_balance": 61,
+      "fit_anomaly": 14,
+      "fit_normal": 14
+    },
+    "grid": {
+      "available_anomaly": 57,
+      "available_normal": 21,
+      "evaluation_anomaly": 10,
+      "evaluation_normal": 10,
+      "excluded_balance": 38,
+      "fit_anomaly": 10,
+      "fit_normal": 10
+    },
+    "hazelnut": {
+      "available_anomaly": 70,
+      "available_normal": 40,
+      "evaluation_anomaly": 20,
+      "evaluation_normal": 20,
+      "excluded_balance": 30,
+      "fit_anomaly": 20,
+      "fit_normal": 20
+    },
+    "leather": {
+      "available_anomaly": 92,
+      "available_normal": 32,
+      "evaluation_anomaly": 16,
+      "evaluation_normal": 16,
+      "excluded_balance": 60,
+      "fit_anomaly": 16,
+      "fit_normal": 16
+    },
+    "metal_nut": {
+      "available_anomaly": 93,
+      "available_normal": 22,
+      "evaluation_anomaly": 11,
+      "evaluation_normal": 11,
+      "excluded_balance": 71,
+      "fit_anomaly": 11,
+      "fit_normal": 11
+    },
+    "pill": {
+      "available_anomaly": 141,
+      "available_normal": 26,
+      "evaluation_anomaly": 13,
+      "evaluation_normal": 13,
+      "excluded_balance": 115,
+      "fit_anomaly": 13,
+      "fit_normal": 13
+    },
+    "screw": {
+      "available_anomaly": 119,
+      "available_normal": 41,
+      "evaluation_anomaly": 20,
+      "evaluation_normal": 20,
+      "excluded_balance": 80,
+      "fit_anomaly": 20,
+      "fit_normal": 20
+    },
+    "tile": {
+      "available_anomaly": 84,
+      "available_normal": 33,
+      "evaluation_anomaly": 16,
+      "evaluation_normal": 16,
+      "excluded_balance": 53,
+      "fit_anomaly": 16,
+      "fit_normal": 16
+    },
+    "toothbrush": {
+      "available_anomaly": 30,
+      "available_normal": 12,
+      "evaluation_anomaly": 6,
+      "evaluation_normal": 6,
+      "excluded_balance": 18,
+      "fit_anomaly": 6,
+      "fit_normal": 6
+    },
+    "transistor": {
+      "available_anomaly": 40,
+      "available_normal": 60,
+      "evaluation_anomaly": 20,
+      "evaluation_normal": 20,
+      "excluded_balance": 20,
+      "fit_anomaly": 20,
+      "fit_normal": 20
+    },
+    "wood": {
+      "available_anomaly": 60,
+      "available_normal": 19,
+      "evaluation_anomaly": 9,
+      "evaluation_normal": 9,
+      "excluded_balance": 43,
+      "fit_anomaly": 9,
+      "fit_normal": 9
+    },
+    "zipper": {
+      "available_anomaly": 119,
+      "available_normal": 32,
+      "evaluation_anomaly": 16,
+      "evaluation_normal": 16,
+      "excluded_balance": 87,
+      "fit_anomaly": 16,
+      "fit_normal": 16
+    }
+  },
+  "csv_file": "mvtec_matched_test_per_category_v1_seed111.csv",
+  "csv_sha256": "dd0274ea80e5760cd25980553ae7eab4ba30bdfc94fc86b1ac963f612697cec6",
+  "dataset": "mvtec",
+  "dataset_counts": {
+    "mvtec": 1725
+  },
+  "dataset_description": "MVTec AD official test split",
+  "fit_fraction": 0.5,
+  "protocol_version": "matched_test_per_category_v1",
+  "split_seed": 111,
+  "total_manifest_rows": 1725,
+  "total_selected_rows": 884
+}

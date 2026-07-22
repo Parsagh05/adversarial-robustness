@@ -182,7 +182,7 @@ Run this notebook once before the adversarial benchmark.
 - Matches each category to its smaller normal/anomaly count, drops one from each label when needed to make the count even, and creates exact 50/50 fit/evaluation assignments.
 - Writes one CSV/JSON pair per requested collection under `splits/` and packages exactly those files as `dataset_matched_splits_seed111.zip`.
 - Keeps excluded majority-label rows in the CSV as `excluded_balance` for auditing.
-- Package and upload the `splits/` output as a Kaggle Dataset so every experiment uses the identical sample IDs.
+- Commit the validated `splits/` directory with the repository so every experiment uses the identical sample IDs. The ZIP remains available as a portable backup.
 
 ### `kaggle_calibrate_anomalyclip_thresholds.ipynb`
 
@@ -202,7 +202,7 @@ This notebook runs the actual adversarial benchmark.
 - The public pipeline repository is cloned to `/kaggle/working/adversarial-robustness`; no GitHub token is needed.
 - Set `DATASET` to `mvtec`, `visa`, `both`, `mvtec_to_visa`, or `visa_to_mvtec`. Cross modes require both mounts. Mount MVTec at `/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection` and/or VisA at `/kaggle/input/datasets/alirezasalehy/visa-ad/VisA_20220922`, or update the corresponding root.
 - Set `THRESHOLDS_PATH` to the mounted `category_thresholds.json`. Leave it as `None` to calibrate automatically inside the benchmark output directory.
-- Keep `USE_SPLIT_MANIFEST = True` and set `SPLIT_MANIFEST_ROOT` to the mounted output generated for the same `DATASET` mode. The filename is selected automatically.
+- Keep `USE_SPLIT_MANIFEST = True`. The notebook reads the committed manifests directly from `experiment_root / 'splits'`, and selects the appropriate filename automatically.
 - Use `FULL_RUN = False` for the small end-to-end smoke test and `FULL_RUN = True` for all 18 conditions.
 - The full run writes to `/kaggle/working/anomalyclip_<dataset>_adversarial_held_out_full`; the smoke run uses the corresponding dataset-specific output directory.
 - The final cell packages the complete output directory as a ZIP.
@@ -211,12 +211,11 @@ The notebooks expect a Kaggle GPU. MVTec mode selects the VisA-trained `9_12_4_m
 
 ## How to run on Kaggle
 
-1. Add MVTec AD, VisA, or both; select the matching `DATASET` mode and run `kaggle_generate_dataset_matched_splits.ipynb` once.
-2. Upload its `splits/` output as a Kaggle Dataset.
-3. Run `kaggle_calibrate_anomalyclip_thresholds.ipynb` once to generate `category_thresholds.json`.
-4. Mount both artifacts in the adversarial notebook and set `SPLIT_MANIFEST_ROOT` and `THRESHOLDS_PATH`.
-5. Set `FULL_RUN = False` for a smoke test or `True` for the complete benchmark.
-6. Run all cells in `kaggle_adversarial_anomalyclip.ipynb`; the final cell creates the results ZIP.
+1. Push the validated `splits/` directory with this repository; regenerate it only when changing the split protocol, seed, or datasets.
+2. Add the required MVTec AD and/or VisA Kaggle datasets to the notebook.
+3. Optionally run `kaggle_calibrate_anomalyclip_thresholds.ipynb` to generate reusable `category_thresholds.json`; otherwise the main notebook calibrates automatically.
+4. Set `FULL_RUN = False` for a smoke test or `True` for the complete benchmark.
+5. Run all cells in `kaggle_adversarial_anomalyclip.ipynb`; it reads manifests from the cloned repository and the final cell creates the results ZIP.
 
 With a manifest, `max_samples_per_category` is a strict upper bound. The loader selects equal counts from normal-fit, anomaly-fit, normal-evaluation, and anomaly-evaluation. Consequently, values that are not divisible by four are rounded down to the largest valid balanced subset; values below four are rejected.
 
@@ -264,6 +263,10 @@ Runs are resumable. Completed conditions are skipped, while active-condition par
 |-- kaggle_generate_dataset_matched_splits.ipynb
 |-- kaggle_calibrate_anomalyclip_thresholds.ipynb
 |-- kaggle_adversarial_anomalyclip.ipynb
+|-- splits/
+|   |-- mvtec_matched_test_per_category_v1_seed111.{csv,json}
+|   |-- visa_matched_test_per_category_v1_seed111.{csv,json}
+|   `-- both_matched_test_per_category_v1_seed111.{csv,json}
 `-- adversarial_harness/
     |-- config.py
     |-- dataset.py

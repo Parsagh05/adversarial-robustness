@@ -193,6 +193,18 @@ class ExperimentConfig:
             raise ValueError(
                 "split_manifest_csv and split_manifest_json must be provided together"
             )
+        if (
+            self.use_split_manifest
+            and self.split_manifest_csv is None
+            and self.split_manifest_json is None
+        ):
+            artifact_name = (
+                f"{self.manifest_dataset}_matched_test_per_category_v1_"
+                f"seed{self.split_seed}"
+            )
+            split_root = Path(__file__).resolve().parents[1] / "splits"
+            self.split_manifest_csv = str(split_root / f"{artifact_name}.csv")
+            self.split_manifest_json = str(split_root / f"{artifact_name}.json")
         if self.use_split_manifest and not self.split_manifest_csv:
             raise ValueError(
                 "use_split_manifest=True requires split_manifest_csv and "

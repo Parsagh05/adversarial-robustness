@@ -183,6 +183,16 @@ class DatasetSelectionTests(unittest.TestCase):
             **common,
         )
         self.assertTrue(manifest_config.use_split_manifest)
+        automatic_manifest = ExperimentConfig(
+            mvtec_root="mvtec",
+            dataset="mvtec",
+            use_split_manifest=True,
+            **common,
+        )
+        self.assertEqual(
+            Path(automatic_manifest.split_manifest_csv).name,
+            "mvtec_matched_test_per_category_v1_seed111.csv",
+        )
 
     def test_cross_dataset_protocol_fits_source_and_evaluates_destination(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
