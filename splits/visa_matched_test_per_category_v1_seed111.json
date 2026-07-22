@@ -125,7 +125,9 @@
     }
   },
   "csv_file": "visa_matched_test_per_category_v1_seed111.csv",
-  "csv_sha256": "a04abc973d613fc4a24ecf06648218d8fb98b0af62a53e1e48938d50448a2790",
+  "csv_canonical_sha256": "d63a0d1674db5360b4aa776dc5c1d10102787c2282d23742e6ed4f8c8d7d782a",
+  "csv_raw_sha256": "a04abc973d613fc4a24ecf06648218d8fb98b0af62a53e1e48938d50448a2790",
+  "csv_sha256": "d63a0d1674db5360b4aa776dc5c1d10102787c2282d23742e6ed4f8c8d7d782a",
   "dataset": "visa",
   "dataset_counts": {
     "visa": 2162

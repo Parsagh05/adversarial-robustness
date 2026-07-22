@@ -155,7 +155,9 @@
     }
   },
   "csv_file": "mvtec_matched_test_per_category_v1_seed111.csv",
-  "csv_sha256": "dd0274ea80e5760cd25980553ae7eab4ba30bdfc94fc86b1ac963f612697cec6",
+  "csv_canonical_sha256": "511c650621b9a81c049815fe946de5d69ecc88314d1d7de6626388dac47ceec8",
+  "csv_raw_sha256": "dd0274ea80e5760cd25980553ae7eab4ba30bdfc94fc86b1ac963f612697cec6",
+  "csv_sha256": "511c650621b9a81c049815fe946de5d69ecc88314d1d7de6626388dac47ceec8",
   "dataset": "mvtec",
   "dataset_counts": {
     "mvtec": 1725

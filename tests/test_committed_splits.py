@@ -23,8 +23,9 @@ class CommittedSplitArtifactTests(unittest.TestCase):
         metadata = json.loads(json_path.read_text(encoding="utf-8"))
         with csv_path.open("r", newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
-        digest = hashlib.sha256(csv_path.read_bytes()).hexdigest()
-        self.assertEqual(digest, metadata["csv_sha256"])
+        canonical = csv_path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        self.assertEqual(digest, metadata["csv_canonical_sha256"])
         return metadata, rows
 
     def test_hashes_counts_ids_and_strata(self) -> None:
@@ -33,6 +34,9 @@ class CommittedSplitArtifactTests(unittest.TestCase):
                 metadata, rows = self._load(mode)
                 self.assertEqual(metadata["dataset"], mode)
                 self.assertEqual(metadata["protocol_version"], PROTOCOL)
+                self.assertEqual(
+                    metadata["csv_sha256"], metadata["csv_canonical_sha256"]
+                )
                 self.assertEqual(len(rows), metadata["total_manifest_rows"])
                 self.assertEqual(
                     len(

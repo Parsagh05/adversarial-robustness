@@ -1,0 +1,4 @@
+splits/*.csv text eol=lf
+splits/*.json text eol=lf
+thresholds/**/*.json text eol=lf
+thresholds/**/*.npz binary

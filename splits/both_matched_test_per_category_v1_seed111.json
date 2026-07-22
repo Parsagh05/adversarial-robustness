@@ -275,7 +275,9 @@
     }
   },
   "csv_file": "both_matched_test_per_category_v1_seed111.csv",
-  "csv_sha256": "9cff43f69a6ab7530d540be148ab7b8202907f5108ecc0dcde5c5af6fdb67332",
+  "csv_canonical_sha256": "27c1370b306c8e9c7517ffdcbe37ab99d9414f8b3853e0e00797d1c4daf92bb3",
+  "csv_raw_sha256": "9cff43f69a6ab7530d540be148ab7b8202907f5108ecc0dcde5c5af6fdb67332",
+  "csv_sha256": "27c1370b306c8e9c7517ffdcbe37ab99d9414f8b3853e0e00797d1c4daf92bb3",
   "dataset": "both",
   "dataset_counts": {
     "mvtec": 1725,

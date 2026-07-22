@@ -121,6 +121,26 @@ class SplitManifestTests(unittest.TestCase):
                     fit_fraction=0.5,
                 )
 
+    def test_loader_accepts_git_line_ending_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "mvtec"
+            self._make_dataset(root)
+            csv_path = Path(temporary) / "split.csv"
+            json_path = Path(temporary) / "split.json"
+            create_matched_split_manifest(
+                str(root), str(csv_path), str(json_path), split_seed=111
+            )
+            normalized = csv_path.read_bytes().replace(b"\r\n", b"\n")
+            csv_path.write_bytes(normalized)
+            loaded = load_matched_split_manifest(
+                discover_mvtec(str(root)),
+                str(csv_path),
+                str(json_path),
+                split_seed=111,
+                fit_fraction=0.5,
+            )
+            self.assertGreater(len(loaded.samples), 0)
+
     def test_loader_requires_minimum_cap_of_four(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "mvtec"
