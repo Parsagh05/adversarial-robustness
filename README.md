@@ -158,7 +158,7 @@ For the threshold-dependent success metrics, category `c` uses a frozen threshol
 prediction = 1[anomaly_score >= t_c]
 ```
 
-Each `t_c` is the configured quantile—`0.95` by default—of AnomalyCLIP scores on that category's MVTec `train/good` images. Labeled test anomalies are never used to select thresholds. I-AUROC, image AP, P-AUROC, and AUPRO use continuous scores and do not depend on this threshold.
+Each `t_c` is the configured quantile—`0.95` by default—of AnomalyCLIP scores on that category's normal training images from the evaluation dataset. Labeled test anomalies are never used to select thresholds. I-AUROC, image AP, P-AUROC, and AUPRO use continuous scores and do not depend on this threshold.
 
 For every detector metric, the output contains clean, adversarial, and delta values:
 
@@ -188,12 +188,15 @@ Run this notebook once before the adversarial benchmark.
 
 Run this notebook once before the main benchmark when you want reusable decision thresholds.
 
-- Reads only MVTec `train/good`; it does not use test images or labeled anomalies.
+- Leave `DATASETS = ('mvtec', 'visa', 'both')` to calibrate all three collections in one run, or use a one-item tuple.
+- Reads only normal training images from the requested collection(s); it does not use test images or labeled anomalies.
+- Uses the VisA-trained checkpoint for MVTec, the MVTec-trained checkpoint for VisA, and `BOTH_CHECKPOINT_DIR` for the combined collection.
 - Uses image size `518`, AnomalyCLIP, and threshold quantile `0.95`.
-- Saves `category_thresholds.json`, `normal_train_scores.npz`, and `anomalyclip_thresholds_q95.zip` under `/kaggle/working`.
+- Saves separate `<dataset>/category_thresholds.json`, `<dataset>/normal_train_scores.npz`, and `<dataset>/threshold_config.json` files under `/kaggle/working/anomalyclip_thresholds_q95/`.
+- Packages all requested modes as `/kaggle/working/anomalyclip_thresholds_all_q95.zip`.
 - Prints the threshold and score statistics for every category.
 
-The threshold artifact is valid only for the same AnomalyCLIP checkpoint, target configuration, preprocessing/image size, categories, and quantile. The harness validates this metadata and rejects incompatible artifacts.
+The threshold artifact is valid only for the same dataset, AnomalyCLIP checkpoint, target configuration, preprocessing/image size, categories, and quantile. The harness validates this metadata and rejects incompatible artifacts. Cross modes select the destination artifact: `mvtec_to_visa` uses `visa`, and `visa_to_mvtec` uses `mvtec`.
 
 ### `kaggle_adversarial_anomalyclip.ipynb`
 
@@ -201,7 +204,7 @@ This notebook runs the actual adversarial benchmark.
 
 - The public pipeline repository is cloned to `/kaggle/working/adversarial-robustness`; no GitHub token is needed.
 - Set `DATASET` to `mvtec`, `visa`, `both`, `mvtec_to_visa`, or `visa_to_mvtec`. Cross modes require both mounts. Mount MVTec at `/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection` and/or VisA at `/kaggle/input/datasets/alirezasalehy/visa-ad/VisA_20220922`, or update the corresponding root.
-- Set `THRESHOLDS_PATH` to the mounted `category_thresholds.json`. Leave it as `None` to calibrate automatically inside the benchmark output directory.
+- Set `THRESHOLDS_ROOT` to the mounted `anomalyclip_thresholds_q95` directory. The notebook selects `<evaluation_dataset>/category_thresholds.json` automatically; leave it as `None` to calibrate inside the benchmark output directory.
 - Keep `USE_SPLIT_MANIFEST = True`. The notebook reads the committed manifests directly from `experiment_root / 'splits'`, and selects the appropriate filename automatically.
 - Use `FULL_RUN = False` for the small end-to-end smoke test and `FULL_RUN = True` for all 18 conditions.
 - The full run writes to `/kaggle/working/anomalyclip_<dataset>_adversarial_held_out_full`; the smoke run uses the corresponding dataset-specific output directory.
