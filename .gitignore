@@ -33,6 +33,7 @@ Thumbs.db
 data/
 datasets/
 mvtec_anomaly_detection/
+summary.csv
 
 # Model checkpoints and downloaded weights
 checkpoints/

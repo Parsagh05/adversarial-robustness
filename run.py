@@ -50,6 +50,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold-quantile", type=float, default=0.95)
     parser.add_argument("--thresholds-path")
     parser.add_argument("--max-samples-per-category", type=int)
+    parser.add_argument("--use-split-manifest", action="store_true")
+    parser.add_argument("--split-manifest-csv")
+    parser.add_argument("--split-manifest-json")
     parser.add_argument("--save-adversarial-examples", type=int, default=0)
     parser.add_argument("--no-lpips", action="store_true")
     parser.add_argument("--no-resume", action="store_true")
@@ -87,6 +90,9 @@ def main() -> None:
         threshold_quantile=args.threshold_quantile,
         thresholds_path=args.thresholds_path,
         max_samples_per_category=args.max_samples_per_category,
+        use_split_manifest=args.use_split_manifest,
+        split_manifest_csv=args.split_manifest_csv,
+        split_manifest_json=args.split_manifest_json,
         resume=not args.no_resume,
         attack=attack,
     )

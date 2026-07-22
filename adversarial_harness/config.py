@@ -34,8 +34,8 @@ class AttackConfig:
     universal_steps: int = 200
     random_start: bool = True
     temperature: float = 0.07
-    global_weight: float = 0.5
-    local_weight: float = 0.5
+    global_weight: float = 0.2
+    local_weight: float = 0.8
     feature_layers: Tuple[int, ...] = (6, 12, 18, 24)
     scopes: Tuple[str, ...] = VALID_SCOPES
     directions: Tuple[str, ...] = VALID_DIRECTIONS
@@ -107,6 +107,9 @@ class ExperimentConfig:
     threshold_quantile: float = 0.95
     thresholds_path: Optional[str] = None
     max_samples_per_category: Optional[int] = None
+    use_split_manifest: bool = False
+    split_manifest_csv: Optional[str] = None
+    split_manifest_json: Optional[str] = None
     resume: bool = True
     attack: AttackConfig = field(default_factory=AttackConfig)
     target_kwargs: Dict[str, Any] = field(default_factory=dict)
@@ -149,6 +152,28 @@ class ExperimentConfig:
         if self.max_samples_per_category is not None and self.max_samples_per_category < 2:
             raise ValueError(
                 "max_samples_per_category must be at least 2 so both labels remain present"
+            )
+        if self.split_manifest_csv is not None:
+            self.split_manifest_csv = str(self.split_manifest_csv)
+        if self.split_manifest_json is not None:
+            self.split_manifest_json = str(self.split_manifest_json)
+        if bool(self.split_manifest_csv) != bool(self.split_manifest_json):
+            raise ValueError(
+                "split_manifest_csv and split_manifest_json must be provided together"
+            )
+        if self.use_split_manifest and not self.split_manifest_csv:
+            raise ValueError(
+                "use_split_manifest=True requires split_manifest_csv and "
+                "split_manifest_json"
+            )
+        if (
+            self.use_split_manifest
+            and self.max_samples_per_category is not None
+            and self.max_samples_per_category < 4
+        ):
+            raise ValueError(
+                "Manifest-based max_samples_per_category must be at least 4 "
+                "to retain normal/anomaly x fit/evaluation strata"
             )
 
     @property

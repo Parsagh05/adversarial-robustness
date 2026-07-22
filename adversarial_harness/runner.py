@@ -35,6 +35,11 @@ from .metrics import (
     resize_anomaly_maps,
 )
 from .models import CLIPSurrogate, build_target
+from .split_manifest import (
+    MATCHED_SPLIT_PROTOCOL,
+    LoadedSplitManifest,
+    load_matched_split_manifest,
+)
 
 
 SUMMARY_FIELDS = (
@@ -175,6 +180,24 @@ def _condition(scope: str, direction: str, mode: str) -> str:
     return f"{scope}__{direction}__{mode}"
 
 
+def _counts_by_category(samples: Sequence[MVTecSample]) -> Dict[str, int]:
+    return {
+        category: len(category_samples)
+        for category, category_samples in sorted(group_by_category(samples).items())
+    }
+
+
+def _counts_by_category_and_label(
+    samples: Sequence[MVTecSample],
+) -> Dict[str, Dict[str, int]]:
+    counts: Dict[str, Dict[str, int]] = {}
+    for sample in samples:
+        label_name = "normal" if sample.label == 0 else "anomaly"
+        counts.setdefault(sample.category, {"normal": 0, "anomaly": 0})
+        counts[sample.category][label_name] += 1
+    return {category: counts[category] for category in sorted(counts)}
+
+
 def _save_tensor_image(tensor: torch.Tensor, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     array = (
@@ -239,6 +262,9 @@ class AdversarialExperiment:
         self.target = None
         self.surrogate = None
         self.category_thresholds: Dict[str, float] = {}
+        self.split_assignments: Dict[str, str] = {}
+        self.split_manifest_metadata: Dict[str, object] = {}
+        self.split_manifest_sha256: str | None = None
 
     def image_loader(self, sample: MVTecSample) -> torch.Tensor:
         return load_image_tensor(sample, self.config.attack.image_size)
@@ -256,6 +282,28 @@ class AdversarialExperiment:
         test_sources = [sample for sample in test_samples if sample.label == source_label]
         if scope == "per_image" or self.config.universal_protocol == "transductive":
             return list(test_sources), list(test_sources), list(test_samples)
+
+        if self.config.use_split_manifest:
+            fit_sources = [
+                sample
+                for sample in test_sources
+                if self.split_assignments.get(sample.protocol_id) == "fit"
+            ]
+            evaluation_sources = [
+                sample
+                for sample in test_sources
+                if self.split_assignments.get(sample.protocol_id) == "evaluation"
+            ]
+            evaluation_samples = [
+                sample
+                for sample in test_samples
+                if self.split_assignments.get(sample.protocol_id) == "evaluation"
+            ]
+            if not fit_sources or not evaluation_sources or not evaluation_samples:
+                raise RuntimeError(
+                    "The matched split manifest produced an empty fit or evaluation set"
+                )
+            return fit_sources, evaluation_sources, evaluation_samples
 
         if direction == "normal_to_abnormal":
             fit_sources = [sample for sample in train_good_samples if sample.label == 0]
@@ -834,6 +882,11 @@ class AdversarialExperiment:
         _write_json(
             diagnostics_dir / "data_split.json",
             {
+                "data_protocol_revision": (
+                    MATCHED_SPLIT_PROTOCOL
+                    if self.config.use_split_manifest
+                    else "legacy_asymmetric_v1"
+                ),
                 "universal_protocol": (
                     self.config.universal_protocol if scope != "per_image" else "per_image"
                 ),
@@ -841,6 +894,18 @@ class AdversarialExperiment:
                 "direction": direction,
                 "fit_fraction": self.config.fit_fraction,
                 "split_seed": self.config.split_seed,
+                "use_split_manifest": self.config.use_split_manifest,
+                "split_manifest_csv": self.config.split_manifest_csv,
+                "split_manifest_json": self.config.split_manifest_json,
+                "split_manifest_sha256": self.split_manifest_sha256,
+                "split_manifest_runtime_counts": self.split_manifest_metadata.get(
+                    "runtime_counts", {}
+                ),
+                "sampling_strategy": (
+                    "saved_category_label_balanced_50_50_manifest"
+                    if self.config.use_split_manifest
+                    else "legacy_runtime_split"
+                ),
                 "fit_source_ids": [sample.protocol_id for sample in fit_source_samples],
                 "evaluation_source_ids": [
                     sample.protocol_id for sample in evaluation_source_samples
@@ -849,6 +914,15 @@ class AdversarialExperiment:
                 "fit_source_count": len(fit_source_samples),
                 "evaluation_source_count": len(evaluation_source_samples),
                 "evaluation_all_count": len(evaluation_samples),
+                "fit_source_counts_by_category": _counts_by_category(
+                    fit_source_samples
+                ),
+                "evaluation_source_counts_by_category": _counts_by_category(
+                    evaluation_source_samples
+                ),
+                "evaluation_counts_by_category_and_label": (
+                    _counts_by_category_and_label(evaluation_samples)
+                ),
             },
         )
 
@@ -1256,9 +1330,42 @@ class AdversarialExperiment:
 
     def run(self) -> Path:
         _seed_everything(self.config.attack.seed)
+        samples = discover_mvtec(
+            self.config.mvtec_root,
+            categories=self.config.categories,
+            max_samples_per_category=(
+                None
+                if self.config.use_split_manifest
+                else self.config.max_samples_per_category
+            ),
+        )
+        if self.config.use_split_manifest:
+            loaded_manifest: LoadedSplitManifest = load_matched_split_manifest(
+                samples,
+                csv_path=str(self.config.split_manifest_csv),
+                json_path=str(self.config.split_manifest_json),
+                split_seed=self.config.split_seed,
+                fit_fraction=self.config.fit_fraction,
+                max_samples_per_category=self.config.max_samples_per_category,
+            )
+            samples = loaded_manifest.samples
+            self.split_assignments = loaded_manifest.assignments
+            self.split_manifest_metadata = loaded_manifest.metadata
+            self.split_manifest_sha256 = loaded_manifest.csv_sha256
+            print(
+                f"[data] Loaded matched split manifest {MATCHED_SPLIT_PROTOCOL} "
+                f"(sha256={self.split_manifest_sha256[:12]}...)"
+            )
+
         config_path = self.output / "config.json"
         # JSON-normalize tuples before comparison with the persisted JSON.
         requested_config = json.loads(json.dumps(self.config.to_dict()))
+        if self.config.use_split_manifest:
+            requested_config["data_protocol_revision"] = MATCHED_SPLIT_PROTOCOL
+            requested_config["split_manifest_sha256"] = self.split_manifest_sha256
+            requested_config["split_manifest_runtime_counts"] = (
+                self.split_manifest_metadata.get("runtime_counts", {})
+            )
         if self.config.resume and config_path.exists():
             existing_config = json.loads(config_path.read_text(encoding="utf-8"))
             if existing_config != requested_config:
@@ -1267,11 +1374,17 @@ class AdversarialExperiment:
                     "configuration. Use a new output_root or set resume=False."
                 )
         _write_json(config_path, requested_config)
-        samples = discover_mvtec(
-            self.config.mvtec_root,
-            categories=self.config.categories,
-            max_samples_per_category=self.config.max_samples_per_category,
-        )
+        if self.config.use_split_manifest:
+            snapshot_dir = self.output / "split_manifest"
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            for source_value in (
+                self.config.split_manifest_csv,
+                self.config.split_manifest_json,
+            ):
+                source = Path(str(source_value)).expanduser().resolve()
+                destination = snapshot_dir / source.name
+                if source != destination.resolve():
+                    shutil.copy2(source, destination)
         grouped = group_by_category(samples)
         print(
             f"[data] {len(samples)} MVTec test images across "
@@ -1283,7 +1396,11 @@ class AdversarialExperiment:
         )
         print(
             f"[data] {len(train_good_samples)} MVTec train/good images available "
-            "for threshold calibration and held-out universal fitting"
+            + (
+                "for threshold calibration only"
+                if self.config.use_split_manifest
+                else "for threshold calibration and held-out universal fitting"
+            )
         )
         self._load_target()
         try:
@@ -1335,8 +1452,14 @@ class AdversarialExperiment:
                 if (
                     scope == "per_image"
                     or self.config.universal_protocol == "transductive"
-                    or direction == "normal_to_abnormal"
                 ):
+                    clean_cache_key = "full_test"
+                elif self.config.use_split_manifest:
+                    clean_cache_key = (
+                        f"{MATCHED_SPLIT_PROTOCOL}__{self.split_manifest_sha256}"
+                        f"__max_{self.config.max_samples_per_category}"
+                    )
+                elif direction == "normal_to_abnormal":
                     clean_cache_key = "full_test"
                 else:
                     clean_cache_key = (
