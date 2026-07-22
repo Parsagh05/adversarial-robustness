@@ -1,4 +1,4 @@
-"""Create and load reproducible matched MVTec held-out split manifests."""
+"""Create and load reproducible MVTec/VisA held-out split manifests."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .dataset import MVTecSample, discover_mvtec, group_by_category
+from .dataset import MVTecSample, discover_anomaly_datasets, group_by_category
 
 
 MATCHED_SPLIT_PROTOCOL = "matched_test_per_category_v1"
@@ -79,12 +79,14 @@ def _write_json(path: Path, data: Mapping[str, object]) -> None:
 
 
 def create_matched_split_manifest(
-    mvtec_root: str,
+    mvtec_root: Optional[str],
     csv_path: str,
     json_path: str,
     categories: Optional[Sequence[str]] = None,
     split_seed: int = 111,
     fit_fraction: float = 0.5,
+    dataset: str = "mvtec",
+    visa_root: Optional[str] = None,
 ) -> Tuple[Path, Path]:
     """Create one category-balanced, label-balanced 50/50 test manifest.
 
@@ -99,13 +101,29 @@ def create_matched_split_manifest(
             f"{MATCHED_SPLIT_PROTOCOL} requires fit_fraction=0.5, "
             f"got {fit_fraction}"
         )
-    root = Path(mvtec_root).expanduser().resolve()
+    mode = str(dataset).lower()
+    if mode not in {"mvtec", "visa", "both"}:
+        raise ValueError("dataset must be one of: mvtec, visa, both")
+    roots: Dict[str, Path] = {}
+    if mode in {"mvtec", "both"}:
+        if not mvtec_root:
+            raise ValueError(f"mvtec_root is required when dataset={mode!r}")
+        roots["mvtec"] = Path(mvtec_root).expanduser().resolve()
+    if mode in {"visa", "both"}:
+        if not visa_root:
+            raise ValueError(f"visa_root is required when dataset={mode!r}")
+        roots["visa"] = Path(visa_root).expanduser().resolve()
     csv_output = Path(csv_path).expanduser().resolve()
     json_output = Path(json_path).expanduser().resolve()
     if csv_output == json_output:
         raise ValueError("csv_path and json_path must be different files")
 
-    samples = discover_mvtec(str(root), categories=categories)
+    samples = discover_anomaly_datasets(
+        mode,
+        mvtec_root=mvtec_root,
+        visa_root=visa_root,
+        categories=categories,
+    )
     rows: List[Dict[str, object]] = []
     category_counts: Dict[str, Dict[str, int]] = {}
     for category, category_samples in sorted(group_by_category(samples).items()):
@@ -153,7 +171,9 @@ def create_matched_split_manifest(
                     "defect_type": sample.defect_type,
                     "label": sample.label,
                     "partition": assignments[sample.protocol_id],
-                    "relative_image_path": sample.image_path.resolve().relative_to(root).as_posix(),
+                    "relative_image_path": sample.image_path.resolve()
+                    .relative_to(roots[sample.dataset])
+                    .as_posix(),
                 }
             )
 
@@ -161,13 +181,22 @@ def create_matched_split_manifest(
     csv_digest = _sha256(csv_output)
     metadata: Dict[str, object] = {
         "protocol_version": MATCHED_SPLIT_PROTOCOL,
-        "dataset": "MVTec AD official test split",
+        "dataset": mode,
+        "dataset_description": {
+            "mvtec": "MVTec AD official test split",
+            "visa": "VisA official test split",
+            "both": "MVTec AD and VisA official test splits",
+        }[mode],
         "split_seed": int(split_seed),
         "fit_fraction": 0.5,
         "balancing_strategy": "match_smaller_label_count_per_category_then_even_50_50",
         "csv_file": csv_output.name,
         "csv_sha256": csv_digest,
         "categories": sorted(category_counts),
+        "dataset_counts": {
+            name: sum(1 for sample in samples if sample.dataset == name)
+            for name in sorted(roots)
+        },
         "category_counts": category_counts,
         "total_manifest_rows": len(rows),
         "total_selected_rows": sum(
@@ -199,6 +228,7 @@ def _reindex(samples: Sequence[MVTecSample]) -> List[MVTecSample]:
             mask_path=sample.mask_path,
             label=sample.label,
             split=sample.split,
+            dataset=sample.dataset,
         )
         for index, sample in enumerate(samples)
     ]
@@ -211,6 +241,7 @@ def load_matched_split_manifest(
     split_seed: int,
     fit_fraction: float,
     max_samples_per_category: Optional[int] = None,
+    expected_dataset: Optional[str] = None,
 ) -> LoadedSplitManifest:
     """Validate a saved manifest and select a balanced run subset from it."""
 
@@ -225,6 +256,18 @@ def load_matched_split_manifest(
         raise ValueError(
             "Unsupported split manifest protocol: "
             f"{metadata.get('protocol_version')!r}"
+        )
+    stored_dataset = metadata.get("dataset")
+    # Historical v1 artifacts used a descriptive MVTec string. Accept those,
+    # while requiring newly generated manifests to match the configured mode.
+    if (
+        expected_dataset is not None
+        and stored_dataset in {"mvtec", "visa", "both"}
+        and stored_dataset != str(expected_dataset).lower()
+    ):
+        raise ValueError(
+            f"Split manifest was generated for dataset={stored_dataset!r}, but "
+            f"the experiment requested dataset={expected_dataset!r}"
         )
     csv_digest = _sha256(csv_input)
     if metadata.get("csv_sha256") != csv_digest:
@@ -242,7 +285,7 @@ def load_matched_split_manifest(
 
     live_by_id = {sample.protocol_id: sample for sample in test_samples}
     if len(live_by_id) != len(test_samples):
-        raise ValueError("Discovered MVTec test samples contain duplicate protocol IDs")
+        raise ValueError("Discovered test samples contain duplicate protocol IDs")
     selected_categories = {sample.category for sample in test_samples}
     rows = [
         row for row in _read_manifest_rows(csv_input)
@@ -261,7 +304,9 @@ def load_matched_split_manifest(
             )
         sample = live_by_id.get(protocol_id)
         if sample is None:
-            raise ValueError(f"Manifest sample is missing from this MVTec mount: {protocol_id}")
+            raise ValueError(
+                f"Manifest sample is missing from the selected dataset mount: {protocol_id}"
+            )
         if (
             row["category"] != sample.category
             or row["defect_type"] != sample.defect_type

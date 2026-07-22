@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 import gc
 import json
 from pathlib import Path
@@ -21,8 +22,7 @@ from .attacks import TargetedPGD, direction_labels
 from .config import ExperimentConfig
 from .dataset import (
     MVTecSample,
-    discover_mvtec,
-    discover_mvtec_train_good,
+    discover_anomaly_datasets,
     group_by_category,
     load_image_tensor,
     load_mask,
@@ -49,6 +49,7 @@ SUMMARY_FIELDS = (
     "universal_protocol",
     "direction",
     "loss_mode",
+    "dataset",
     "category",
     "decision_threshold",
     "source_count",
@@ -82,6 +83,7 @@ DETAIL_FIELDS = (
     "direction",
     "loss_mode",
     "sample_id",
+    "dataset",
     "category",
     "defect_type",
     "image_path",
@@ -120,6 +122,7 @@ SURROGATE_FIELDS = (
     "condition",
     "group",
     "sample_id",
+    "dataset",
     "category",
     "defect_type",
     "target_label",
@@ -196,6 +199,10 @@ def _counts_by_category_and_label(
         counts.setdefault(sample.category, {"normal": 0, "anomaly": 0})
         counts[sample.category][label_name] += 1
     return {category: counts[category] for category in sorted(counts)}
+
+
+def _reindex_samples(samples: Sequence[MVTecSample]) -> List[MVTecSample]:
+    return [replace(sample, index=index) for index, sample in enumerate(samples)]
 
 
 def _save_tensor_image(tensor: torch.Tensor, path: Path) -> None:
@@ -275,11 +282,50 @@ class AdversarialExperiment:
         train_good_samples: Sequence[MVTecSample],
         scope: str,
         direction: str,
+        source_test_samples: Sequence[MVTecSample] = (),
+        source_train_normal_samples: Sequence[MVTecSample] = (),
     ) -> tuple[List[MVTecSample], List[MVTecSample], List[MVTecSample]]:
         """Return fit sources, evaluation sources, and all evaluation samples."""
 
         source_label, _ = direction_labels(direction)
         test_sources = [sample for sample in test_samples if sample.label == source_label]
+        if self.config.is_cross_dataset:
+            cross_fit_pool = (
+                source_train_normal_samples
+                if source_label == 0 and not self.config.use_split_manifest
+                else source_test_samples
+            )
+            fit_sources = [
+                sample
+                for sample in cross_fit_pool
+                if sample.label == source_label
+                and (
+                    not self.config.use_split_manifest
+                    or self.split_assignments.get(sample.protocol_id) == "fit"
+                )
+            ]
+            evaluation_sources = [
+                sample
+                for sample in test_sources
+                if (
+                    not self.config.use_split_manifest
+                    or self.split_assignments.get(sample.protocol_id) == "evaluation"
+                )
+            ]
+            evaluation_samples = [
+                sample
+                for sample in test_samples
+                if (
+                    not self.config.use_split_manifest
+                    or self.split_assignments.get(sample.protocol_id) == "evaluation"
+                )
+            ]
+            if not fit_sources or not evaluation_sources or not evaluation_samples:
+                raise RuntimeError(
+                    "Cross-dataset protocol produced an empty source fit or target "
+                    "evaluation set"
+                )
+            return list(fit_sources), evaluation_sources, evaluation_samples
         if scope == "per_image" or self.config.universal_protocol == "transductive":
             return list(test_sources), list(test_sources), list(test_samples)
 
@@ -309,11 +355,11 @@ class AdversarialExperiment:
             fit_sources = [sample for sample in train_good_samples if sample.label == 0]
             if not fit_sources:
                 raise RuntimeError(
-                    "held_out normal_to_abnormal requires MVTec train/good images"
+                    "held_out normal_to_abnormal requires normal training images"
                 )
             return fit_sources, list(test_sources), list(test_samples)
 
-        # MVTec has no abnormal training split. Split anomalies within every
+        # Neither benchmark has an abnormal training split. Split anomalies within every
         # category, fit on one deterministic subset, and exclude those exact
         # images from every held-out metric and prediction artifact.
         rng = np.random.default_rng(self.config.split_seed)
@@ -413,6 +459,16 @@ class AdversarialExperiment:
                     f"Threshold artifact {path} has {key}={payload.get(key)!r}; "
                     f"expected {value!r}. Recalibrate for this target setup."
                 )
+        stored_dataset = payload.get("dataset")
+        if (
+            stored_dataset is not None
+            and stored_dataset != self.config.evaluation_dataset
+        ):
+            raise ValueError(
+                f"Threshold artifact {path} was calibrated for dataset "
+                f"{stored_dataset!r}; expected "
+                f"{self.config.evaluation_dataset!r}."
+            )
         stored_quantile = float(payload.get("threshold_quantile", float("nan")))
         if not np.isclose(stored_quantile, self.config.threshold_quantile):
             raise ValueError(
@@ -464,12 +520,13 @@ class AdversarialExperiment:
             category: [] for category in grouped
         }
         all_ids: List[str] = []
+        all_datasets: List[str] = []
         all_categories: List[str] = []
         all_scores: List[float] = []
         batches = list(_batches(train_good_samples, self.config.target_batch_size))
         for batch in tqdm(
             batches,
-            desc="Calibrating target thresholds on train/good",
+            desc="Calibrating target thresholds on normal training images",
             unit="batch",
             dynamic_ncols=True,
         ):
@@ -479,6 +536,7 @@ class AdversarialExperiment:
                 value = float(score)
                 scores_by_category[sample.category].append(value)
                 all_ids.append(sample.protocol_id)
+                all_datasets.append(sample.dataset)
                 all_categories.append(sample.category)
                 all_scores.append(value)
 
@@ -487,10 +545,11 @@ class AdversarialExperiment:
         for category in sorted(scores_by_category):
             values = np.asarray(scores_by_category[category], dtype=np.float64)
             if values.size == 0:
-                raise RuntimeError(f"No train/good calibration scores for {category}")
+                raise RuntimeError(f"No normal-training calibration scores for {category}")
             threshold = float(np.quantile(values, self.config.threshold_quantile))
             thresholds[category] = threshold
             category_records[category] = {
+                "dataset": grouped[category][0].dataset,
                 "threshold": threshold,
                 "sample_count": int(values.size),
                 "score_min": float(np.min(values)),
@@ -508,13 +567,15 @@ class AdversarialExperiment:
             "target_model": self.config.target_model,
             "image_size": self.config.attack.image_size,
             "checkpoint": self._checkpoint_fingerprint(),
-            "calibration_split": "MVTec train/good",
+            "dataset": self.config.evaluation_dataset,
+            "calibration_split": "normal training split",
             "categories": category_records,
         }
         _write_json(destination, payload)
         np.savez_compressed(
             destination.parent / "normal_train_scores.npz",
             protocol_ids=np.asarray(all_ids),
+            datasets=np.asarray(all_datasets),
             categories=np.asarray(all_categories),
             scores=np.asarray(all_scores, dtype=np.float32),
         )
@@ -589,6 +650,7 @@ class AdversarialExperiment:
         np.savez_compressed(
             cache,
             sample_ids=np.asarray([sample.sample_id for sample in samples]),
+            datasets=np.asarray([sample.dataset for sample in samples]),
             scores=scores,
             lowres_maps=map_array,
         )
@@ -668,6 +730,7 @@ class AdversarialExperiment:
                         "condition": condition,
                         "group": group_name,
                         "sample_id": sample.protocol_id,
+                        "dataset": sample.dataset,
                         "category": sample.category,
                         "defect_type": sample.defect_type,
                         "target_label": target_label,
@@ -717,7 +780,9 @@ class AdversarialExperiment:
             )
             return
 
-        sample_lookup = {sample.sample_id: sample for sample in evaluation_sources}
+        # Surrogate diagnostics store split-qualified IDs, which are also
+        # collision-safe for VisA and mixed-dataset runs.
+        sample_lookup = {sample.protocol_id: sample for sample in evaluation_sources}
         rows_by_category: Dict[str, List[Mapping[str, object]]] = {}
         for row in details:
             rows_by_category.setdefault(str(row["category"]), []).append(row)
@@ -882,10 +947,18 @@ class AdversarialExperiment:
         _write_json(
             diagnostics_dir / "data_split.json",
             {
+                "dataset": self.config.dataset,
+                "source_dataset": self.config.source_dataset,
+                "evaluation_dataset": self.config.evaluation_dataset,
+                "cross_dataset_transfer": self.config.is_cross_dataset,
                 "data_protocol_revision": (
                     MATCHED_SPLIT_PROTOCOL
                     if self.config.use_split_manifest
-                    else "legacy_asymmetric_v1"
+                    else (
+                        "cross_dataset_transfer_v1"
+                        if self.config.is_cross_dataset
+                        else "legacy_asymmetric_v1"
+                    )
                 ),
                 "universal_protocol": (
                     self.config.universal_protocol if scope != "per_image" else "per_image"
@@ -904,7 +977,11 @@ class AdversarialExperiment:
                 "sampling_strategy": (
                     "saved_category_label_balanced_50_50_manifest"
                     if self.config.use_split_manifest
-                    else "legacy_runtime_split"
+                    else (
+                        "source_dataset_fit_destination_dataset_evaluation"
+                        if self.config.is_cross_dataset
+                        else "legacy_runtime_split"
+                    )
                 ),
                 "fit_source_ids": [sample.protocol_id for sample in fit_source_samples],
                 "evaluation_source_ids": [
@@ -976,6 +1053,7 @@ class AdversarialExperiment:
                         "direction": direction,
                         "loss_mode": mode,
                         "sample_id": sample.sample_id,
+                        "dataset": sample.dataset,
                         "category": sample.category,
                         "defect_type": sample.defect_type,
                         "image_path": str(sample.image_path),
@@ -1269,6 +1347,7 @@ class AdversarialExperiment:
                 ),
                 "direction": direction,
                 "loss_mode": mode,
+                "dataset": category_samples[0].dataset,
                 "category": category,
                 "decision_threshold": self.category_thresholds[category],
                 "source_count": len(category_details),
@@ -1309,6 +1388,7 @@ class AdversarialExperiment:
             ),
             "direction": direction,
             "loss_mode": mode,
+            "dataset": self.config.dataset,
             "category": "__macro__",
             "decision_threshold": float("nan"),
             "source_count": sum(int(row["source_count"]) for row in rows),
@@ -1320,7 +1400,7 @@ class AdversarialExperiment:
         for field in SUMMARY_FIELDS:
             if field in macro or field in {
                 "condition", "target_model", "scope", "universal_protocol",
-                "direction", "loss_mode", "category"
+                "direction", "loss_mode", "dataset", "category"
             }:
                 continue
             values = np.asarray([float(row[field]) for row in rows], dtype=np.float64)
@@ -1330,25 +1410,59 @@ class AdversarialExperiment:
 
     def run(self) -> Path:
         _seed_everything(self.config.attack.seed)
-        samples = discover_mvtec(
-            self.config.mvtec_root,
-            categories=self.config.categories,
-            max_samples_per_category=(
-                None
-                if self.config.use_split_manifest
-                else self.config.max_samples_per_category
-            ),
+        sample_cap = (
+            None
+            if self.config.use_split_manifest
+            else self.config.max_samples_per_category
         )
+        samples = discover_anomaly_datasets(
+            self.config.evaluation_dataset,
+            mvtec_root=self.config.mvtec_root,
+            visa_root=self.config.visa_root,
+            categories=self.config.categories,
+            max_samples_per_category=sample_cap,
+        )
+        source_test_samples: List[MVTecSample] = []
+        if self.config.is_cross_dataset:
+            source_test_samples = discover_anomaly_datasets(
+                self.config.source_dataset,
+                mvtec_root=self.config.mvtec_root,
+                visa_root=self.config.visa_root,
+                categories=self.config.source_categories,
+                max_samples_per_category=sample_cap,
+            )
         if self.config.use_split_manifest:
+            manifest_samples = (
+                _reindex_samples([*source_test_samples, *samples])
+                if self.config.is_cross_dataset
+                else samples
+            )
             loaded_manifest: LoadedSplitManifest = load_matched_split_manifest(
-                samples,
+                manifest_samples,
                 csv_path=str(self.config.split_manifest_csv),
                 json_path=str(self.config.split_manifest_json),
                 split_seed=self.config.split_seed,
                 fit_fraction=self.config.fit_fraction,
                 max_samples_per_category=self.config.max_samples_per_category,
+                expected_dataset=self.config.manifest_dataset,
             )
-            samples = loaded_manifest.samples
+            if self.config.is_cross_dataset:
+                source_test_samples = _reindex_samples(
+                    [
+                        sample
+                        for sample in loaded_manifest.samples
+                        if sample.dataset == self.config.source_dataset
+                    ]
+                )
+                samples = _reindex_samples(
+                    [
+                        sample
+                        for sample in loaded_manifest.samples
+                        if sample.dataset == self.config.evaluation_dataset
+                    ]
+                )
+            else:
+                samples = loaded_manifest.samples
             self.split_assignments = loaded_manifest.assignments
             self.split_manifest_metadata = loaded_manifest.metadata
             self.split_manifest_sha256 = loaded_manifest.csv_sha256
@@ -1387,15 +1501,33 @@ class AdversarialExperiment:
                     shutil.copy2(source, destination)
         grouped = group_by_category(samples)
         print(
-            f"[data] {len(samples)} MVTec test images across "
+            f"[data] {len(samples)} {self.config.evaluation_dataset} evaluation "
+            "test images across "
             f"{len(grouped)} categories: {', '.join(grouped)}"
         )
-        train_good_samples = discover_mvtec_train_good(
-            self.config.mvtec_root,
+        train_good_samples = discover_anomaly_datasets(
+            self.config.evaluation_dataset,
+            mvtec_root=self.config.mvtec_root,
+            visa_root=self.config.visa_root,
             categories=self.config.categories,
+            train_normal=True,
         )
+        source_train_normal_samples: List[MVTecSample] = []
+        if self.config.is_cross_dataset:
+            source_train_normal_samples = discover_anomaly_datasets(
+                self.config.source_dataset,
+                mvtec_root=self.config.mvtec_root,
+                visa_root=self.config.visa_root,
+                categories=self.config.source_categories,
+                train_normal=True,
+            )
+            print(
+                f"[data] Cross-dataset attack fit: {self.config.source_dataset} -> "
+                f"{self.config.evaluation_dataset}; {len(source_test_samples)} source "
+                "test images available"
+            )
         print(
-            f"[data] {len(train_good_samples)} MVTec train/good images available "
+            f"[data] {len(train_good_samples)} normal training images available "
             + (
                 "for threshold calibration only"
                 if self.config.use_split_manifest
@@ -1407,7 +1539,12 @@ class AdversarialExperiment:
             self._prepare_category_thresholds(
                 train_good_samples, list(grouped)
             )
-            self._load_surrogate(list(grouped))
+            prompt_categories = sorted(
+                set(grouped)
+                | {sample.category for sample in source_test_samples}
+                | {sample.category for sample in source_train_normal_samples}
+            )
+            self._load_surrogate(prompt_categories)
             lpips_metric = LPIPSMetric(
                 self.config.device,
                 backbone=self.config.lpips_backbone,
@@ -1446,6 +1583,8 @@ class AdversarialExperiment:
                         train_good_samples,
                         scope,
                         direction,
+                        source_test_samples=source_test_samples,
+                        source_train_normal_samples=source_train_normal_samples,
                     )
                 )
                 evaluation_grouped = group_by_category(evaluation_samples)
@@ -1459,6 +1598,8 @@ class AdversarialExperiment:
                         f"{MATCHED_SPLIT_PROTOCOL}__{self.split_manifest_sha256}"
                         f"__max_{self.config.max_samples_per_category}"
                     )
+                elif self.config.is_cross_dataset:
+                    clean_cache_key = "cross_dataset_full_destination_test"
                 elif direction == "normal_to_abnormal":
                     clean_cache_key = "full_test"
                 else:
@@ -1505,6 +1646,9 @@ class AdversarialExperiment:
                     ),
                     sample_ids=np.asarray(
                         [sample.sample_id for sample in evaluation_samples]
+                    ),
+                    datasets=np.asarray(
+                        [sample.dataset for sample in evaluation_samples]
                     ),
                     protocol_ids=np.asarray(
                         [sample.protocol_id for sample in evaluation_samples]
@@ -1577,14 +1721,18 @@ def calibrate_thresholds(config: ExperimentConfig, force: bool = False) -> Path:
         experiment.output / "threshold_config.json",
         json.loads(json.dumps(config.to_dict())),
     )
-    train_good_samples = discover_mvtec_train_good(
-        config.mvtec_root,
+    train_good_samples = discover_anomaly_datasets(
+        config.evaluation_dataset,
+        mvtec_root=config.mvtec_root,
+        visa_root=config.visa_root,
         categories=config.categories,
+        train_normal=True,
     )
     categories = sorted(group_by_category(train_good_samples))
     print(
         f"[data] Calibrating {len(categories)} categories from "
-        f"{len(train_good_samples)} MVTec train/good images"
+        f"{len(train_good_samples)} normal training images from "
+        f"{config.evaluation_dataset}"
     )
     experiment._load_target()
     try:

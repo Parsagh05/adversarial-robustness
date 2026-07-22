@@ -1,4 +1,4 @@
-"""Command-line entrypoint for the MVTec adversarial benchmark."""
+"""Command-line entrypoint for the MVTec/VisA adversarial benchmark."""
 
 from __future__ import annotations
 
@@ -18,12 +18,25 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Adversarial robustness evaluation for zero-shot anomaly detection"
     )
-    parser.add_argument("--mvtec-root", required=True)
+    parser.add_argument(
+        "--dataset",
+        choices=(
+            "mvtec",
+            "visa",
+            "both",
+            "mvtec_to_visa",
+            "visa_to_mvtec",
+        ),
+        default="mvtec",
+    )
+    parser.add_argument("--mvtec-root")
+    parser.add_argument("--visa-root")
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--anomalyclip-root", required=True)
     parser.add_argument("--anomalyclip-checkpoint", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--categories", nargs="*")
+    parser.add_argument("--source-categories", nargs="*")
     parser.add_argument("--scopes", nargs="+", default=list(AttackConfig().scopes))
     parser.add_argument("--directions", nargs="+", default=list(AttackConfig().directions))
     parser.add_argument("--loss-modes", nargs="+", default=list(AttackConfig().loss_modes))
@@ -74,11 +87,16 @@ def main() -> None:
     )
     config = ExperimentConfig(
         mvtec_root=args.mvtec_root,
+        visa_root=args.visa_root,
+        dataset=args.dataset,
         output_root=args.output_root,
         anomalyclip_root=args.anomalyclip_root,
         anomalyclip_checkpoint=args.anomalyclip_checkpoint,
         device=args.device,
         categories=tuple(args.categories) if args.categories else None,
+        source_categories=(
+            tuple(args.source_categories) if args.source_categories else None
+        ),
         target_batch_size=args.target_batch_size,
         compute_lpips=not args.no_lpips,
         save_adversarial_examples=args.save_adversarial_examples,

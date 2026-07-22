@@ -12,6 +12,13 @@ VALID_DIRECTIONS = ("normal_to_abnormal", "abnormal_to_normal")
 VALID_LOSS_MODES = ("global", "local", "combined")
 VALID_UNIVERSAL_PROTOCOLS = ("transductive", "held_out")
 VALID_THRESHOLD_MODES = ("normal_train_quantile",)
+VALID_DATASETS = (
+    "mvtec",
+    "visa",
+    "both",
+    "mvtec_to_visa",
+    "visa_to_mvtec",
+)
 
 
 def _tuple(value: Sequence[str]) -> Tuple[str, ...]:
@@ -83,13 +90,16 @@ class AttackConfig:
 class ExperimentConfig:
     """End-to-end benchmark settings."""
 
-    mvtec_root: str
+    mvtec_root: Optional[str]
     output_root: str
     anomalyclip_root: str
     anomalyclip_checkpoint: str
+    dataset: str = "mvtec"
+    visa_root: Optional[str] = None
     device: str = "cuda"
     target_model: str = "AnomalyCLIP"
     categories: Optional[Tuple[str, ...]] = None
+    source_categories: Optional[Tuple[str, ...]] = None
     target_batch_size: int = 2
     metric_size: int = 518
     aupro_fpr_limit: float = 0.30
@@ -115,8 +125,30 @@ class ExperimentConfig:
     target_kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.dataset = str(self.dataset).lower()
+        if self.dataset not in VALID_DATASETS:
+            raise ValueError(
+                f"dataset must be one of {VALID_DATASETS}, got {self.dataset!r}"
+            )
+        if (
+            self.dataset
+            in {"mvtec", "both", "mvtec_to_visa", "visa_to_mvtec"}
+            and not self.mvtec_root
+        ):
+            raise ValueError(f"mvtec_root is required when dataset={self.dataset!r}")
+        if (
+            self.dataset in {"visa", "both", "mvtec_to_visa", "visa_to_mvtec"}
+            and not self.visa_root
+        ):
+            raise ValueError(f"visa_root is required when dataset={self.dataset!r}")
         if self.categories is not None:
             self.categories = tuple(self.categories)
+        if self.source_categories is not None:
+            self.source_categories = tuple(self.source_categories)
+        if not self.is_cross_dataset and self.source_categories is not None:
+            raise ValueError(
+                "source_categories is only valid for cross-dataset transfer modes"
+            )
         if self.target_batch_size <= 0:
             raise ValueError("target_batch_size must be positive")
         if self.metric_size <= 0:
@@ -175,6 +207,41 @@ class ExperimentConfig:
                 "Manifest-based max_samples_per_category must be at least 4 "
                 "to retain normal/anomaly x fit/evaluation strata"
             )
+        if self.is_cross_dataset:
+            non_dataset_scopes = sorted(set(self.attack.scopes) - {"dataset"})
+            if non_dataset_scopes:
+                raise ValueError(
+                    "Cross-dataset transfer supports only the universal 'dataset' "
+                    f"scope; remove {non_dataset_scopes}"
+                )
+            if self.universal_protocol != "held_out":
+                raise ValueError(
+                    "Cross-dataset transfer requires universal_protocol='held_out'"
+                )
+
+    @property
+    def is_cross_dataset(self) -> bool:
+        return self.dataset in {"mvtec_to_visa", "visa_to_mvtec"}
+
+    @property
+    def source_dataset(self) -> str:
+        if self.dataset == "mvtec_to_visa":
+            return "mvtec"
+        if self.dataset == "visa_to_mvtec":
+            return "visa"
+        return self.dataset
+
+    @property
+    def evaluation_dataset(self) -> str:
+        if self.dataset == "mvtec_to_visa":
+            return "visa"
+        if self.dataset == "visa_to_mvtec":
+            return "mvtec"
+        return self.dataset
+
+    @property
+    def manifest_dataset(self) -> str:
+        return "both" if self.is_cross_dataset else self.dataset
 
     @property
     def output_path(self) -> Path:

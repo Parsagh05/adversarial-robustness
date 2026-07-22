@@ -1,13 +1,13 @@
 # Adversarial Robustness of AnomalyCLIP
 
-This project evaluates whether adversarial perturbations optimized on a public CLIP surrogate transfer to **AnomalyCLIP** for zero-shot anomaly detection on **MVTec AD**. It measures both image-level detection and pixel-level localization under two targeted attack directions, three loss objectives, and three perturbation scopes.
+This project evaluates whether adversarial perturbations optimized on a public CLIP surrogate transfer to **AnomalyCLIP** for zero-shot anomaly detection on **MVTec AD**, **VisA**, or their combined category set. It measures both image-level detection and pixel-level localization under two targeted attack directions, three loss objectives, and three perturbation scopes.
 
 The attack is black-box with respect to the anomaly detector: gradients come only from the public CLIP surrogate. AnomalyCLIP is queried after the adversarial image is generated and never contributes scores, maps, weights, or gradients to attack optimization.
 
 ## Pipeline
 
 ```text
-MVTec image
+MVTec or VisA image
     |
     +--> AnomalyCLIP on clean image -----------------------+
     |                                                      |
@@ -40,7 +40,7 @@ The surrogate uses WinCLIP-style prompt ensembles and keeps every prompt embeddi
 The perturbation scope controls how widely the optimized `delta` is shared:
 
 - `per_image` optimizes a new perturbation for each attacked image. It is the most sample-specific scope and acts as the transfer-attack upper bound.
-- `per_category` optimizes one universal perturbation from source-label images in a single MVTec category, then applies that same perturbation to the category's evaluation images.
+- `per_category` optimizes one universal perturbation from source-label images in a single category, then applies that same perturbation to the category's evaluation images.
 - `dataset` optimizes one universal perturbation across source-label images from all selected categories. During optimization, each image still uses the prompt bank for its own category, but the final perturbation is category-agnostic and shared across the dataset.
 
 In all three scopes, PGD uses only surrogate gradients. The resulting image is then evaluated by AnomalyCLIP through the same target-only inference path.
@@ -57,7 +57,7 @@ Only the source class is perturbed in each direction. Opposite-class images rema
 | Scope | Perturbation |
 |---|---|
 | `per_image` | A separate perturbation is optimized for each source image. |
-| `per_category` | One universal perturbation is optimized and evaluated within each MVTec category. |
+| `per_category` | One universal perturbation is optimized and evaluated within each selected category. |
 | `dataset` | One category-agnostic universal perturbation is optimized across all selected categories. |
 
 Universal attacks support two protocols:
@@ -65,6 +65,27 @@ Universal attacks support two protocols:
 - `held_out` with `use_split_manifest=True` is the notebook default. A saved manifest matches normal/anomalous counts within every category and assigns each label exactly 50/50 to fit and evaluation. Normal-to-abnormal fits only on manifest normal-fit rows; abnormal-to-normal fits only on anomaly-fit rows. Both directions use the same balanced held-out evaluation cohort.
 - `held_out` without a manifest retains the legacy asymmetric behavior for backward compatibility. It should not be used for a direction-fair comparison.
 - `transductive` fits and evaluates on the same selected source population. Results from this protocol must be labeled as transductive and should not be compared directly with held-out results.
+
+## Dataset selection
+
+The shared `dataset` setting accepts `mvtec`, `visa`, `both`, `mvtec_to_visa`, or `visa_to_mvtec`. VisA is read from its official `split_csv/1cls.csv`; no folder conversion is required. In `both` mode, `per_category` remains category-specific while the `dataset` scope learns one perturbation across all selected MVTec and VisA categories.
+
+The two `_to_` modes are strict cross-dataset transfer protocols:
+
+- `mvtec_to_visa` optimizes one dataset-universal perturbation using only MVTec source images, then freezes it and evaluates only on VisA.
+- `visa_to_mvtec` optimizes using only VisA source images, then freezes the perturbation and evaluates only on MVTec.
+
+Cross-dataset modes require `universal_protocol='held_out'` and `scopes=('dataset',)`. Per-image noise cannot transfer to a different image, and the benchmarks have different categories, so per-category transfer is undefined. With manifests enabled, cross modes use the `both_matched_test_per_category_v1_seed111` artifact: source-label `fit` rows optimize the perturbation and destination `evaluation` rows produce all reported metrics. Without a manifest, normal attacks fit on the source normal-training split, anomalous attacks fit on source test anomalies, and evaluation uses the destination test split. Target thresholds are always calibrated on the destination dataset only.
+
+The Kaggle notebook is preconfigured with:
+
+```python
+DATASET = 'mvtec'  # Also: 'visa', 'both', 'mvtec_to_visa', 'visa_to_mvtec'
+MVTEC_ROOT = Path('/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection')
+VISA_ROOT = Path('/kaggle/input/datasets/alirezasalehy/visa-ad/VisA_20220922')
+```
+
+The equivalent CLI flags are `--dataset`, `--mvtec-root`, `--visa-root`, and optional `--source-categories`. Only the roots needed by the selected mode are required. Matched manifests can be generated for the three dataset collections and are checked against the experiment mode before use; cross modes reuse the combined `both` manifest.
 
 The saved 50/50 fit/evaluation assignment is used differently by each scope:
 
@@ -151,13 +172,15 @@ A positive delta therefore means that the attack degraded detector performance. 
 
 The notebooks are orchestration-only. They clone/update the public [`Parsagh05/adversarial-robustness`](https://github.com/Parsagh05/adversarial-robustness) repository and the official AnomalyCLIP repository, install `requirements.txt`, resolve Kaggle paths, call the shared harness, and package the output. Attack and metric code is not duplicated in notebook cells. No GitHub token or Kaggle secret is required to clone either repository.
 
-### `kaggle_generate_mvtec_matched_splits.ipynb`
+### `kaggle_generate_dataset_matched_splits.ipynb`
 
 Run this notebook once before the adversarial benchmark.
 
-- Reads the official MVTec test split and never loads a model.
+- Leave `DATASETS = ('mvtec', 'visa', 'both')` to generate all three manifest pairs in one run, or use a one-item tuple such as `('visa',)` for one collection.
+- The generated `both` manifest is reused by `mvtec_to_visa` and `visa_to_mvtec` experiments.
+- Reads the selected official test split(s) and never loads a model.
 - Matches each category to its smaller normal/anomaly count, drops one from each label when needed to make the count even, and creates exact 50/50 fit/evaluation assignments.
-- Writes `splits/mvtec_matched_test_per_category_v1_seed111.csv` and its validated JSON metadata.
+- Writes one CSV/JSON pair per requested collection under `splits/` and packages exactly those files as `dataset_matched_splits_seed111.zip`.
 - Keeps excluded majority-label rows in the CSV as `excluded_balance` for auditing.
 - Package and upload the `splits/` output as a Kaggle Dataset so every experiment uses the identical sample IDs.
 
@@ -177,18 +200,18 @@ The threshold artifact is valid only for the same AnomalyCLIP checkpoint, target
 This notebook runs the actual adversarial benchmark.
 
 - The public pipeline repository is cloned to `/kaggle/working/adversarial-robustness`; no GitHub token is needed.
-- Mount MVTec at `/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection` or update `MVTEC_ROOT`.
+- Set `DATASET` to `mvtec`, `visa`, `both`, `mvtec_to_visa`, or `visa_to_mvtec`. Cross modes require both mounts. Mount MVTec at `/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection` and/or VisA at `/kaggle/input/datasets/alirezasalehy/visa-ad/VisA_20220922`, or update the corresponding root.
 - Set `THRESHOLDS_PATH` to the mounted `category_thresholds.json`. Leave it as `None` to calibrate automatically inside the benchmark output directory.
-- Keep `USE_SPLIT_MANIFEST = True` and set `SPLIT_MANIFEST_ROOT` to the mounted output of `kaggle_generate_mvtec_matched_splits.ipynb`.
+- Keep `USE_SPLIT_MANIFEST = True` and set `SPLIT_MANIFEST_ROOT` to the mounted output generated for the same `DATASET` mode. The filename is selected automatically.
 - Use `FULL_RUN = False` for the small end-to-end smoke test and `FULL_RUN = True` for all 18 conditions.
-- The full run writes to `/kaggle/working/anomalyclip_adversarial_held_out_full`; the smoke run uses a separate output directory.
+- The full run writes to `/kaggle/working/anomalyclip_<dataset>_adversarial_held_out_full`; the smoke run uses the corresponding dataset-specific output directory.
 - The final cell packages the complete output directory as a ZIP.
 
-Both notebooks expect a Kaggle GPU and use the official AnomalyCLIP checkpoint at `checkpoints/9_12_4_multiscale/epoch_15.pth`. The checkpoint is trained on VisA and is used for zero-shot evaluation on MVTec.
+The notebooks expect a Kaggle GPU. MVTec mode selects the VisA-trained `9_12_4_multiscale` checkpoint, while VisA mode selects the MVTec-trained `9_12_4_multiscale_visa` checkpoint. Combined mode must use one shared checkpoint and defaults to `9_12_4_multiscale`; this can be changed with `BOTH_CHECKPOINT_DIR`.
 
 ## How to run on Kaggle
 
-1. Add the MVTec AD dataset and run `kaggle_generate_mvtec_matched_splits.ipynb` once.
+1. Add MVTec AD, VisA, or both; select the matching `DATASET` mode and run `kaggle_generate_dataset_matched_splits.ipynb` once.
 2. Upload its `splits/` output as a Kaggle Dataset.
 3. Run `kaggle_calibrate_anomalyclip_thresholds.ipynb` once to generate `category_thresholds.json`.
 4. Mount both artifacts in the adversarial notebook and set `SPLIT_MANIFEST_ROOT` and `THRESHOLDS_PATH`.
@@ -207,8 +230,8 @@ output_root/
 |-- normal_train_scores.npz
 |-- clean_predictions.npz
 |-- split_manifest/
-|   |-- mvtec_matched_test_per_category_v1_seed111.csv
-|   `-- mvtec_matched_test_per_category_v1_seed111.json
+|   |-- <dataset>_matched_test_per_category_v1_seed111.csv
+|   `-- <dataset>_matched_test_per_category_v1_seed111.json
 |-- clean_metrics/
 |-- summary.csv
 |-- per_image.csv
@@ -238,7 +261,7 @@ Runs are resumable. Completed conditions are skipped, while active-condition par
 |-- README.md
 |-- requirements.txt
 |-- run.py
-|-- kaggle_generate_mvtec_matched_splits.ipynb
+|-- kaggle_generate_dataset_matched_splits.ipynb
 |-- kaggle_calibrate_anomalyclip_thresholds.ipynb
 |-- kaggle_adversarial_anomalyclip.ipynb
 `-- adversarial_harness/
