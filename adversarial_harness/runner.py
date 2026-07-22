@@ -205,6 +205,18 @@ def _reindex_samples(samples: Sequence[MVTecSample]) -> List[MVTecSample]:
     return [replace(sample, index=index) for index, sample in enumerate(samples)]
 
 
+def _samples_by_id(
+    samples: Sequence[MVTecSample],
+) -> Dict[str, MVTecSample]:
+    """Index samples by both artifact IDs and split-qualified protocol IDs."""
+
+    return {
+        identifier: sample
+        for sample in samples
+        for identifier in (sample.sample_id, sample.protocol_id)
+    }
+
+
 def _save_tensor_image(tensor: torch.Tensor, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     array = (
@@ -233,8 +245,7 @@ def _normalized_pair(first: np.ndarray, second: np.ndarray) -> tuple[np.ndarray,
 
 def _heatmap_image(values_01: np.ndarray) -> Image.Image:
     gray = Image.fromarray(
-        (np.clip(values_01, 0.0, 1.0) * 255.0).round().astype(np.uint8),
-        mode="L",
+        (np.clip(values_01, 0.0, 1.0) * 255.0).round().astype(np.uint8)
     )
     return ImageOps.colorize(gray, black="#0b1f6d", mid="#f7f7f7", white="#b40426")
 
@@ -780,9 +791,7 @@ class AdversarialExperiment:
             )
             return
 
-        # Surrogate diagnostics store split-qualified IDs, which are also
-        # collision-safe for VisA and mixed-dataset runs.
-        sample_lookup = {sample.protocol_id: sample for sample in evaluation_sources}
+        sample_lookup = _samples_by_id(evaluation_sources)
         rows_by_category: Dict[str, List[Mapping[str, object]]] = {}
         for row in details:
             rows_by_category.setdefault(str(row["category"]), []).append(row)
@@ -864,7 +873,7 @@ class AdversarialExperiment:
                 ).save(role_dir / "difference_x10.png")
 
                 mask = load_mask(sample, self.config.metric_size)
-                Image.fromarray((mask * 255).astype(np.uint8), mode="L").save(
+                Image.fromarray((mask * 255).astype(np.uint8)).save(
                     role_dir / "ground_truth_mask.png"
                 )
                 clean_map = resize_anomaly_maps(
@@ -940,9 +949,45 @@ class AdversarialExperiment:
         partial_dir = self.output / "partial" / condition
         diagnostics_dir = self.output / "diagnostics" / condition
         universal_deltas: Dict[str, torch.Tensor] = {}
+        optimization_path = diagnostics_dir / "optimization.json"
+        loss_path = diagnostics_dir / "loss_curve.csv"
+        surrogate_path = diagnostics_dir / "surrogate_predictions.csv"
         optimization_groups: List[Dict[str, object]] = []
-        loss_rows: List[Dict[str, object]] = []
-        surrogate_rows: List[Dict[str, object]] = []
+        if self.config.resume and optimization_path.is_file():
+            saved_optimization = json.loads(
+                optimization_path.read_text(encoding="utf-8")
+            )
+            optimization_groups = list(saved_optimization.get("groups", []))
+        loss_rows: List[Dict[str, object]] = (
+            list(_read_csv(loss_path)) if self.config.resume else []
+        )
+        surrogate_rows: List[Dict[str, object]] = (
+            list(_read_csv(surrogate_path)) if self.config.resume else []
+        )
+
+        partial_outputs = partial_dir / "target_outputs_partial.npz"
+        partial_details = partial_dir / "per_image_partial.csv"
+        if self.config.resume and partial_outputs.is_file() and partial_details.is_file():
+            with np.load(partial_outputs, allow_pickle=False) as stored:
+                indices = np.asarray(stored["indices"], dtype=np.int64)
+                stored_scores = np.asarray(stored["adversarial_scores"])
+                stored_maps = np.asarray(stored["adversarial_lowres_maps"])
+            valid_indices = {sample.index for sample in evaluation_source_samples}
+            saved_details = list(_read_csv(partial_details))
+            if (
+                len(indices) == len(saved_details)
+                and len(indices) == len(set(indices.tolist()))
+                and set(indices.tolist()).issubset(valid_indices)
+            ):
+                adversarial_scores[indices] = stored_scores
+                adversarial_maps[indices] = stored_maps
+                processed_indices.update(int(index) for index in indices)
+                details.extend(saved_details)
+                print(
+                    f"[resume] Restored {len(indices)}/"
+                    f"{len(evaluation_source_samples)} attacked target predictions "
+                    f"for {condition}"
+                )
 
         _write_json(
             diagnostics_dir / "data_split.json",
@@ -1081,9 +1126,14 @@ class AdversarialExperiment:
                 save_partial()
 
         if scope == "per_image":
+            remaining_evaluation_samples = [
+                sample
+                for sample in evaluation_source_samples
+                if sample.index not in processed_indices
+            ]
             batches = list(
                 _batches(
-                    evaluation_source_samples,
+                    remaining_evaluation_samples,
                     self.config.attack.per_image_batch_size,
                 )
             )
@@ -1130,6 +1180,13 @@ class AdversarialExperiment:
             )
             for group_name, group_fit_samples in group_progress:
                 group_evaluation_samples = evaluation_groups[group_name]
+                perturbation_path = (
+                    self.output
+                    / "perturbations"
+                    / condition
+                    / f"{_safe_name(group_name)}.pt"
+                )
+                attack_result = None
                 group_progress.set_postfix_str(
                     (
                         f"{group_name}: fit={len(group_fit_samples)}, "
@@ -1137,72 +1194,129 @@ class AdversarialExperiment:
                     ),
                     refresh=False,
                 )
-                with tqdm(
-                    total=self.config.attack.universal_steps,
-                    desc=f"Universal PGD [{group_name}]",
-                    unit="step",
-                    dynamic_ncols=True,
-                    leave=False,
-                ) as optimization_progress:
-
-                    def report(step: int, total: int, loss: float) -> None:
-                        optimization_progress.update(step - optimization_progress.n)
-                        optimization_progress.set_postfix(
-                            targeted_loss=f"{loss:.6f}", refresh=False
+                delta = None
+                if self.config.resume and perturbation_path.is_file():
+                    try:
+                        saved_delta = torch.load(
+                            perturbation_path,
+                            map_location="cpu",
+                            weights_only=True,
+                        )
+                    except TypeError:
+                        saved_delta = torch.load(
+                            perturbation_path, map_location="cpu"
+                        )
+                    expected_fit_ids = [
+                        sample.protocol_id for sample in group_fit_samples
+                    ]
+                    expected_evaluation_ids = [
+                        sample.protocol_id for sample in group_evaluation_samples
+                    ]
+                    if (
+                        saved_delta.get("scope") == scope
+                        and saved_delta.get("direction") == direction
+                        and saved_delta.get("loss_mode") == mode
+                        and saved_delta.get("group") == group_name
+                        and np.isclose(
+                            float(saved_delta.get("epsilon", float("nan"))),
+                            self.config.attack.epsilon,
+                        )
+                        and saved_delta.get("fit_sample_ids") == expected_fit_ids
+                        and saved_delta.get("evaluation_sample_ids")
+                        == expected_evaluation_ids
+                    ):
+                        delta = saved_delta["delta"].to(
+                            self.config.device, dtype=torch.float32
+                        )
+                        tqdm.write(
+                            f"[resume] Restored universal perturbation for "
+                            f"{condition}/{group_name}"
                         )
 
-                    attack_result = attacker.optimize_universal(
-                        group_fit_samples,
-                        self.image_loader,
+                if delta is None:
+                    with tqdm(
+                        total=self.config.attack.universal_steps,
+                        desc=f"Universal PGD [{group_name}]",
+                        unit="step",
+                        dynamic_ncols=True,
+                        leave=False,
+                    ) as optimization_progress:
+
+                        def report(step: int, total: int, loss: float) -> None:
+                            optimization_progress.update(step - optimization_progress.n)
+                            optimization_progress.set_postfix(
+                                targeted_loss=f"{loss:.6f}", refresh=False
+                            )
+
+                        attack_result = attacker.optimize_universal(
+                            group_fit_samples,
+                            self.image_loader,
+                            target_label,
+                            mode,
+                            diagnostic_samples=self._diagnostic_subset(
+                                group_fit_samples
+                            ),
+                            progress=report,
+                        )
+                    delta = attack_result.delta
+                    optimization_groups = [
+                        row
+                        for row in optimization_groups
+                        if row.get("group") != group_name
+                    ]
+                    loss_rows = [
+                        row for row in loss_rows if row.get("group") != group_name
+                    ]
+                    surrogate_rows = [
+                        row
+                        for row in surrogate_rows
+                        if row.get("group") != group_name
+                    ]
+                    group_surrogate_rows = self._surrogate_transfer_rows(
+                        attacker,
+                        group_evaluation_samples,
+                        delta,
                         target_label,
                         mode,
-                        diagnostic_samples=self._diagnostic_subset(group_fit_samples),
-                        progress=report,
+                        condition,
+                        group_name,
                     )
-                delta = attack_result.delta
-                universal_deltas[group_name] = delta.detach().cpu().float()
-                group_surrogate_rows = self._surrogate_transfer_rows(
-                    attacker,
-                    group_evaluation_samples,
-                    delta,
-                    target_label,
-                    mode,
-                    condition,
-                    group_name,
-                )
-                surrogate_rows.extend(group_surrogate_rows)
-                optimization_groups.append(
-                    {
-                        "group": group_name,
-                        "fit_count": len(group_fit_samples),
-                        "evaluation_count": len(group_evaluation_samples),
-                        "diagnostic_sample_ids": attack_result.diagnostic_sample_ids,
-                        "initial_losses": attack_result.initial_losses,
-                        "final_losses": attack_result.final_losses,
-                        "loss_reduction": {
-                            key: attack_result.initial_losses[key]
-                            - attack_result.final_losses[key]
-                            for key in attack_result.initial_losses
-                            if key in attack_result.final_losses
-                        },
-                        "surrogate_targeted_success_rate": (
-                            float(
-                                np.mean(
-                                    [
-                                        int(row["surrogate_targeted_success"])
-                                        for row in group_surrogate_rows
-                                    ]
+                    surrogate_rows.extend(group_surrogate_rows)
+                    optimization_groups.append(
+                        {
+                            "group": group_name,
+                            "fit_count": len(group_fit_samples),
+                            "evaluation_count": len(group_evaluation_samples),
+                            "diagnostic_sample_ids": (
+                                attack_result.diagnostic_sample_ids
+                            ),
+                            "initial_losses": attack_result.initial_losses,
+                            "final_losses": attack_result.final_losses,
+                            "loss_reduction": {
+                                key: attack_result.initial_losses[key]
+                                - attack_result.final_losses[key]
+                                for key in attack_result.initial_losses
+                                if key in attack_result.final_losses
+                            },
+                            "surrogate_targeted_success_rate": (
+                                float(
+                                    np.mean(
+                                        [
+                                            int(row["surrogate_targeted_success"])
+                                            for row in group_surrogate_rows
+                                        ]
+                                    )
                                 )
-                            )
-                            if group_surrogate_rows
-                            else float("nan")
-                        ),
-                    }
-                )
-                loss_rows.extend(
-                    {"group": group_name, **history_row}
-                    for history_row in attack_result.history
-                )
+                                if group_surrogate_rows
+                                else float("nan")
+                            ),
+                        }
+                    )
+                    loss_rows.extend(
+                        {"group": group_name, **history_row}
+                        for history_row in attack_result.history
+                    )
+                universal_deltas[group_name] = delta.detach().cpu().float()
                 # Persist after every universal group so completed optimization
                 # diagnostics survive an interruption during target inference.
                 _write_json(
@@ -1252,8 +1366,16 @@ class AdversarialExperiment:
                         },
                         perturbation_path,
                     )
+                remaining_evaluation_samples = [
+                    sample
+                    for sample in group_evaluation_samples
+                    if sample.index not in processed_indices
+                ]
                 batches = list(
-                    _batches(group_evaluation_samples, self.config.target_batch_size)
+                    _batches(
+                        remaining_evaluation_samples,
+                        self.config.target_batch_size,
+                    )
                 )
                 for batch in tqdm(
                     batches,
@@ -1265,7 +1387,9 @@ class AdversarialExperiment:
                     clean = torch.stack([self.image_loader(sample) for sample in batch])
                     attacked = attacker.apply_universal(clean, delta)
                     evaluate_batch(batch, clean, attacked)
-                del delta, attack_result
+                del delta
+                if attack_result is not None:
+                    del attack_result
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             _write_json(
@@ -1288,6 +1412,9 @@ class AdversarialExperiment:
                 surrogate_rows,
                 SURROGATE_FIELDS,
             )
+            # Persist all predictions before optional visualization work so a
+            # rendering failure can resume without repeating target inference.
+            save_partial()
             self._save_representative_examples(
                 evaluation_source_samples,
                 details,

@@ -5,9 +5,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+
+import numpy as np
+import torch
 
 from adversarial_harness.config import AttackConfig, ExperimentConfig
 from adversarial_harness.dataset import (
+    MVTecSample,
     discover_anomaly_datasets,
     discover_visa,
     discover_visa_train_normal,
@@ -16,7 +21,7 @@ from adversarial_harness.split_manifest import (
     create_matched_split_manifest,
     load_matched_split_manifest,
 )
-from adversarial_harness.runner import AdversarialExperiment
+from adversarial_harness.runner import AdversarialExperiment, _samples_by_id
 
 
 class DatasetSelectionTests(unittest.TestCase):
@@ -91,6 +96,290 @@ class DatasetSelectionTests(unittest.TestCase):
             )
             self.assertTrue(all(sample.protocol_id.startswith("test/visa/") for sample in test))
             self.assertEqual(len(train), 2)
+            lookup = _samples_by_id(test)
+            for sample in test:
+                self.assertIs(lookup[sample.sample_id], sample)
+                self.assertIs(lookup[sample.protocol_id], sample)
+
+    def test_visa_representative_examples_accept_detail_sample_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            sample = MVTecSample(
+                index=0,
+                category="candle",
+                defect_type="normal",
+                image_path=Path(temporary) / "0214.JPG",
+                mask_path=None,
+                label=0,
+                dataset="visa",
+            )
+            config = ExperimentConfig(
+                mvtec_root=None,
+                visa_root="visa",
+                dataset="visa",
+                output_root=str(Path(temporary) / "output"),
+                anomalyclip_root="AnomalyCLIP",
+                anomalyclip_checkpoint="checkpoint.pth",
+                metric_size=4,
+                anomaly_map_sigma=0.0,
+                save_adversarial_examples=1,
+                resume=False,
+                attack=AttackConfig(image_size=4),
+            )
+            experiment = AdversarialExperiment(config)
+            experiment.category_thresholds = {"candle": 0.5}
+            experiment.image_loader = lambda _: torch.zeros((3, 4, 4))
+            details = [
+                {
+                    "sample_id": "visa/candle/normal/0214",
+                    "category": "candle",
+                    "targeted_success": 1,
+                    "directional_score_shift": 0.25,
+                    "lpips": 0.01,
+                    "ssim": 0.99,
+                    "clean_score": 0.1,
+                    "adversarial_score": 0.35,
+                }
+            ]
+
+            experiment._save_representative_examples(
+                [sample],
+                details,
+                np.zeros((1, 2, 2), dtype=np.float32),
+                np.ones((1, 2, 2), dtype=np.float32),
+                {"all_categories": torch.zeros((1, 3, 4, 4))},
+                "dataset",
+                "dataset__normal_to_abnormal__global",
+            )
+
+            manifest = (
+                Path(config.output_root)
+                / "adversarial_examples"
+                / "dataset__normal_to_abnormal__global"
+                / "manifest.json"
+            )
+            self.assertTrue(manifest.is_file())
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["categories"]["candle"]["successful_attack"]["sample_id"],
+                sample.protocol_id,
+            )
+
+    def test_per_image_resume_skips_already_processed_samples(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            samples = [
+                MVTecSample(
+                    index=index,
+                    category="bottle",
+                    defect_type="good",
+                    image_path=Path(temporary) / f"{index:03d}.png",
+                    mask_path=None,
+                    label=0,
+                )
+                for index in range(2)
+            ]
+            config = ExperimentConfig(
+                mvtec_root="mvtec",
+                output_root=str(Path(temporary) / "output"),
+                anomalyclip_root="AnomalyCLIP",
+                anomalyclip_checkpoint="checkpoint.pth",
+                device="cpu",
+                target_batch_size=1,
+                compute_lpips=False,
+                resume=True,
+                attack=AttackConfig(
+                    image_size=4,
+                    scopes=("per_image",),
+                    directions=("normal_to_abnormal",),
+                    loss_modes=("global",),
+                    per_image_batch_size=1,
+                ),
+            )
+            experiment = AdversarialExperiment(config)
+            experiment.surrogate = object()
+            experiment.category_thresholds = {"bottle": 0.5}
+            loaded_indices = []
+            experiment.image_loader = lambda sample: (
+                loaded_indices.append(sample.index) or torch.zeros((3, 4, 4))
+            )
+
+            class FakeTarget:
+                @staticmethod
+                def predict(images):
+                    count = len(images)
+                    return (
+                        np.full(count, 0.75, dtype=np.float32),
+                        np.ones((count, 2, 2), dtype=np.float32),
+                    )
+
+            class FakeAttacker:
+                def __init__(self, surrogate, attack):
+                    pass
+
+                @staticmethod
+                def perturb_batch(clean, categories, target_label, mode):
+                    return clean, None
+
+            experiment.target = FakeTarget()
+            partial_dir = (
+                Path(config.output_root)
+                / "partial"
+                / "per_image__normal_to_abnormal__global"
+            )
+            partial_dir.mkdir(parents=True)
+            np.savez_compressed(
+                partial_dir / "target_outputs_partial.npz",
+                indices=np.asarray([0], dtype=np.int64),
+                adversarial_scores=np.asarray([0.6], dtype=np.float32),
+                adversarial_lowres_maps=np.ones((1, 2, 2), dtype=np.float32),
+            )
+            with (partial_dir / "per_image_partial.csv").open(
+                "w", newline="", encoding="utf-8"
+            ) as handle:
+                writer = csv.DictWriter(handle, fieldnames=("sample_id", "category"))
+                writer.writeheader()
+                writer.writerow(
+                    {"sample_id": samples[0].sample_id, "category": "bottle"}
+                )
+
+            with patch("adversarial_harness.runner.TargetedPGD", FakeAttacker), patch(
+                "adversarial_harness.runner.perceptual_metrics",
+                return_value=(
+                    np.zeros(1, dtype=np.float32),
+                    np.ones(1, dtype=np.float32),
+                    np.zeros(1, dtype=np.float32),
+                ),
+            ):
+                _, _, details = experiment._attack_and_predict(
+                    samples,
+                    samples,
+                    samples,
+                    np.asarray([0.1, 0.2], dtype=np.float32),
+                    np.zeros((2, 2, 2), dtype=np.float32),
+                    "per_image",
+                    "normal_to_abnormal",
+                    "global",
+                    object(),
+                )
+
+            self.assertEqual(loaded_indices, [1])
+            self.assertEqual(len(details), 2)
+            self.assertEqual({row["sample_id"] for row in details}, {
+                samples[0].sample_id,
+                samples[1].sample_id,
+            })
+
+    def test_universal_resume_reuses_delta_and_complete_partial_predictions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            samples = [
+                MVTecSample(
+                    index=index,
+                    category="bottle",
+                    defect_type="good",
+                    image_path=Path(temporary) / f"{index:03d}.png",
+                    mask_path=None,
+                    label=0,
+                )
+                for index in range(2)
+            ]
+            config = ExperimentConfig(
+                mvtec_root="mvtec",
+                output_root=str(Path(temporary) / "output"),
+                anomalyclip_root="AnomalyCLIP",
+                anomalyclip_checkpoint="checkpoint.pth",
+                device="cpu",
+                resume=True,
+                attack=AttackConfig(
+                    image_size=4,
+                    scopes=("dataset",),
+                    directions=("normal_to_abnormal",),
+                    loss_modes=("global",),
+                ),
+            )
+            experiment = AdversarialExperiment(config)
+            experiment.surrogate = object()
+            experiment.category_thresholds = {"bottle": 0.5}
+            experiment.image_loader = lambda _: self.fail(
+                "complete partial predictions should skip image loading"
+            )
+
+            class FakeTarget:
+                @staticmethod
+                def predict(images):
+                    raise AssertionError(
+                        "complete partial predictions should skip target inference"
+                    )
+
+            class FakeAttacker:
+                def __init__(self, surrogate, attack):
+                    pass
+
+                @staticmethod
+                def optimize_universal(*args, **kwargs):
+                    raise AssertionError("saved universal delta should be reused")
+
+            experiment.target = FakeTarget()
+            condition = "dataset__normal_to_abnormal__global"
+            partial_dir = Path(config.output_root) / "partial" / condition
+            partial_dir.mkdir(parents=True)
+            np.savez_compressed(
+                partial_dir / "target_outputs_partial.npz",
+                indices=np.asarray([0, 1], dtype=np.int64),
+                adversarial_scores=np.asarray([0.6, 0.7], dtype=np.float32),
+                adversarial_lowres_maps=np.ones((2, 2, 2), dtype=np.float32),
+            )
+            with (partial_dir / "per_image_partial.csv").open(
+                "w", newline="", encoding="utf-8"
+            ) as handle:
+                writer = csv.DictWriter(handle, fieldnames=("sample_id", "category"))
+                writer.writeheader()
+                writer.writerows(
+                    {
+                        "sample_id": sample.sample_id,
+                        "category": sample.category,
+                    }
+                    for sample in samples
+                )
+
+            perturbation_path = (
+                Path(config.output_root)
+                / "perturbations"
+                / condition
+                / "all_categories.pt"
+            )
+            perturbation_path.parent.mkdir(parents=True)
+            torch.save(
+                {
+                    "delta": torch.zeros((1, 3, 4, 4)),
+                    "epsilon": config.attack.epsilon,
+                    "scope": "dataset",
+                    "direction": "normal_to_abnormal",
+                    "loss_mode": "global",
+                    "group": "all_categories",
+                    "universal_protocol": config.universal_protocol,
+                    "fit_sample_ids": [sample.protocol_id for sample in samples],
+                    "evaluation_sample_ids": [
+                        sample.protocol_id for sample in samples
+                    ],
+                },
+                perturbation_path,
+            )
+
+            with patch("adversarial_harness.runner.TargetedPGD", FakeAttacker):
+                scores, maps, details = experiment._attack_and_predict(
+                    samples,
+                    samples,
+                    samples,
+                    np.asarray([0.1, 0.2], dtype=np.float32),
+                    np.zeros((2, 2, 2), dtype=np.float32),
+                    "dataset",
+                    "normal_to_abnormal",
+                    "global",
+                    object(),
+                )
+
+            np.testing.assert_allclose(scores, [0.6, 0.7])
+            np.testing.assert_allclose(maps, 1.0)
+            self.assertEqual(len(details), 2)
 
     def test_both_mode_combines_and_reindexes_datasets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
