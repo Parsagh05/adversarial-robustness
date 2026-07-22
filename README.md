@@ -204,7 +204,7 @@ This notebook runs the actual adversarial benchmark.
 
 - The public pipeline repository is cloned to `/kaggle/working/adversarial-robustness`; no GitHub token is needed.
 - Set `DATASET` to `mvtec`, `visa`, `both`, `mvtec_to_visa`, or `visa_to_mvtec`. Cross modes require both mounts. Mount MVTec at `/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection` and/or VisA at `/kaggle/input/datasets/alirezasalehy/visa-ad/VisA_20220922`, or update the corresponding root.
-- Set `THRESHOLDS_ROOT` to the mounted `anomalyclip_thresholds_q95` directory. The notebook selects `<evaluation_dataset>/category_thresholds.json` automatically; leave it as `None` to calibrate inside the benchmark output directory.
+- The notebook uses the validated artifacts committed under `experiment_root / 'thresholds'` by default and selects `<evaluation_dataset>/category_thresholds.json` automatically. Set `THRESHOLDS_ROOT = None` to recalibrate inside the benchmark output directory.
 - Keep `USE_SPLIT_MANIFEST = True`. The notebook reads the committed manifests directly from `experiment_root / 'splits'`, and selects the appropriate filename automatically.
 - Use `FULL_RUN = False` for the small end-to-end smoke test and `FULL_RUN = True` for all 18 conditions.
 - The full run writes to `/kaggle/working/anomalyclip_<dataset>_adversarial_held_out_full`; the smoke run uses the corresponding dataset-specific output directory.
@@ -270,6 +270,10 @@ Runs are resumable. Completed conditions are skipped, while active-condition par
 |   |-- mvtec_matched_test_per_category_v1_seed111.{csv,json}
 |   |-- visa_matched_test_per_category_v1_seed111.{csv,json}
 |   `-- both_matched_test_per_category_v1_seed111.{csv,json}
+|-- thresholds/
+|   |-- mvtec/{category_thresholds.json,normal_train_scores.npz,threshold_config.json}
+|   |-- visa/{category_thresholds.json,normal_train_scores.npz,threshold_config.json}
+|   `-- both/{category_thresholds.json,normal_train_scores.npz,threshold_config.json}
 `-- adversarial_harness/
     |-- config.py
     |-- dataset.py

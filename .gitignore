@@ -79,3 +79,7 @@ dist/
 *.tmp
 *.temp
 ~$*
+
+# Version-controlled calibration artifacts used by the benchmark
+!thresholds/
+!thresholds/**
