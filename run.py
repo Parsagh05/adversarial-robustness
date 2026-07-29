@@ -38,12 +38,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--categories", nargs="*")
     parser.add_argument("--source-categories", nargs="*")
     parser.add_argument("--scopes", nargs="+", default=list(AttackConfig().scopes))
-    parser.add_argument("--directions", nargs="+", default=list(AttackConfig().directions))
-    parser.add_argument("--loss-modes", nargs="+", default=list(AttackConfig().loss_modes))
+    parser.add_argument(
+        "--directions", nargs="+", default=list(AttackConfig().directions)
+    )
+    parser.add_argument(
+        "--loss-modes", nargs="+", default=list(AttackConfig().loss_modes)
+    )
     parser.add_argument("--epsilon", type=float, default=8.0 / 255.0)
     parser.add_argument("--step-size", type=float, default=2.0 / 255.0)
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--universal-steps", type=int, default=200)
+    parser.add_argument("--no-mask-local-loss", action="store_true")
+    parser.add_argument("--local-background-weight", type=float, default=0.1)
     parser.add_argument("--target-batch-size", type=int, default=2)
     parser.add_argument("--attack-batch-size", type=int, default=1)
     parser.add_argument("--universal-batch-size", type=int, default=2)
@@ -62,6 +68,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--threshold-quantile", type=float, default=0.95)
     parser.add_argument("--thresholds-path")
+    parser.add_argument("--map-success-min-mean-shift", type=float)
+    parser.add_argument("--map-success-min-pixel-fraction", type=float, default=0.5)
+    parser.add_argument("--map-false-positive-threshold", type=float, default=2.0)
+    parser.add_argument("--localization-success-min-p-ap-drop", type=float, default=0.0)
     parser.add_argument("--max-samples-per-category", type=int)
     parser.add_argument("--use-split-manifest", action="store_true")
     parser.add_argument("--split-manifest-csv")
@@ -78,6 +88,8 @@ def main() -> None:
         step_size=args.step_size,
         steps=args.steps,
         universal_steps=args.universal_steps,
+        mask_local_loss=not args.no_mask_local_loss,
+        local_background_weight=args.local_background_weight,
         scopes=tuple(args.scopes),
         directions=tuple(args.directions),
         loss_modes=tuple(args.loss_modes),
@@ -106,6 +118,10 @@ def main() -> None:
         threshold_mode=args.threshold_mode,
         threshold_quantile=args.threshold_quantile,
         thresholds_path=args.thresholds_path,
+        map_success_min_mean_shift=args.map_success_min_mean_shift,
+        map_success_min_pixel_fraction=args.map_success_min_pixel_fraction,
+        map_false_positive_threshold=args.map_false_positive_threshold,
+        localization_success_min_p_ap_drop=(args.localization_success_min_p_ap_drop),
         max_samples_per_category=args.max_samples_per_category,
         use_split_manifest=args.use_split_manifest,
         split_manifest_csv=args.split_manifest_csv,

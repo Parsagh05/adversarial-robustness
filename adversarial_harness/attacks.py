@@ -50,6 +50,7 @@ class TargetedPGD:
         categories: Sequence[str],
         target_label: int,
         mode: str,
+        spatial_masks: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         if mode not in VALID_LOSS_MODES:
             raise ValueError(f"Unknown loss mode: {mode}")
@@ -58,8 +59,12 @@ class TargetedPGD:
         group_count = 0
 
         for category in sorted(set(categories)):
-            indices = [index for index, value in enumerate(categories) if value == category]
-            index_tensor = torch.as_tensor(indices, device=self.device, dtype=torch.long)
+            indices = [
+                index for index, value in enumerate(categories) if value == category
+            ]
+            index_tensor = torch.as_tensor(
+                indices, device=self.device, dtype=torch.long
+            )
             bank = self.surrogate.prompts[category]
             target = torch.full(
                 (len(indices),), target_label, device=self.device, dtype=torch.long
@@ -83,10 +88,40 @@ class TargetedPGD:
                     local_logits = ensemble_class_logits(
                         selected, bank, self.config.temperature
                     )
-                    local_target = target[:, None].expand(-1, selected.shape[1]).reshape(-1)
-                    layer_losses.append(
-                        F.cross_entropy(local_logits.reshape(-1, 2), local_target)
-                    )
+                    token_count = selected.shape[1]
+                    local_target = target[:, None].expand(-1, token_count)
+                    token_losses = F.cross_entropy(
+                        local_logits.reshape(-1, 2),
+                        local_target.reshape(-1),
+                        reduction="none",
+                    ).reshape(len(indices), token_count)
+                    token_weights = torch.ones_like(token_losses)
+                    if self.config.mask_local_loss and spatial_masks is not None:
+                        category_masks = spatial_masks.index_select(0, index_tensor)
+                        side = int(token_count**0.5)
+                        if side * side != token_count:
+                            raise ValueError(
+                                "Mask-aware local loss requires a square patch grid, "
+                                f"got {token_count} tokens"
+                            )
+                        pooled_masks = F.adaptive_max_pool2d(
+                            category_masks[:, None].float(), (side, side)
+                        )[:, 0].reshape(len(indices), token_count)
+                        has_defect = pooled_masks.sum(dim=1, keepdim=True) > 0
+                        masked_weights = (
+                            self.config.local_background_weight
+                            + (1.0 - self.config.local_background_weight) * pooled_masks
+                        )
+                        # Normal source images have no positive mask. Their local
+                        # false-alarm objective therefore continues to target the
+                        # complete patch grid.
+                        token_weights = torch.where(
+                            has_defect, masked_weights, token_weights
+                        )
+                    per_image_loss = (token_losses * token_weights).sum(
+                        dim=1
+                    ) / token_weights.sum(dim=1).clamp_min(1e-12)
+                    layer_losses.append(per_image_loss.mean())
                 if not layer_losses:
                     raise RuntimeError("The surrogate returned no patch features")
                 total_local = total_local + torch.stack(layer_losses).mean()
@@ -114,12 +149,18 @@ class TargetedPGD:
         categories: Sequence[str],
         target_label: int,
         mode: str,
+        spatial_masks: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         global_features, patch_features = self.surrogate.encode_visual(
             images_01, include_patches=mode in {"local", "combined"}
         )
         return self._group_losses(
-            global_features, patch_features, categories, target_label, mode
+            global_features,
+            patch_features,
+            categories,
+            target_label,
+            mode,
+            spatial_masks=spatial_masks,
         )
 
     def objective(
@@ -128,9 +169,14 @@ class TargetedPGD:
         categories: Sequence[str],
         target_label: int,
         mode: str,
+        spatial_masks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         return self.objective_components(
-            images_01, categories, target_label, mode
+            images_01,
+            categories,
+            target_label,
+            mode,
+            spatial_masks=spatial_masks,
         )["total"]
 
     def surrogate_scores(
@@ -219,15 +265,23 @@ class TargetedPGD:
         categories: Sequence[str],
         target_label: int,
         mode: str,
+        spatial_masks: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Optimize independent per-image perturbations for a batch."""
 
         clean = clean_images.to(self.device)
+        masks = spatial_masks.to(self.device) if spatial_masks is not None else None
         delta = self._initial_delta(clean.shape, clean)
         for _ in range(self.config.steps):
             delta.requires_grad_(True)
             adversarial = (clean + delta).clamp(0.0, 1.0)
-            loss = self.objective(adversarial, categories, target_label, mode)
+            loss = self.objective(
+                adversarial,
+                categories,
+                target_label,
+                mode,
+                spatial_masks=masks,
+            )
             gradient = torch.autograd.grad(loss, delta, only_inputs=True)[0]
             # Targeted PGD minimizes CE for the requested incorrect class.
             delta = delta.detach() - self.config.step_size * gradient.sign()
@@ -241,6 +295,7 @@ class TargetedPGD:
         image_loader: Callable[[object], torch.Tensor],
         target_label: int,
         mode: str,
+        mask_loader: Optional[Callable[[object], torch.Tensor]] = None,
         diagnostic_samples: Optional[Sequence[object]] = None,
         progress: Callable[[int, int, float], None] | None = None,
     ) -> UniversalAttackResult:
@@ -265,7 +320,12 @@ class TargetedPGD:
             for index, sample in enumerate(diagnostic_samples)
         ]
         initial_losses = self._diagnostic_losses(
-            diagnostic_samples, image_loader, delta, target_label, mode
+            diagnostic_samples,
+            image_loader,
+            delta,
+            target_label,
+            mode,
+            mask_loader=mask_loader,
         )
         history: List[Dict[str, float]] = []
 
@@ -285,11 +345,22 @@ class TargetedPGD:
                 self.device
             )
             categories = [str(getattr(sample, "category")) for sample in batch_samples]
+            spatial_masks = (
+                torch.stack([mask_loader(sample) for sample in batch_samples]).to(
+                    self.device
+                )
+                if mask_loader is not None and mode in {"local", "combined"}
+                else None
+            )
 
             delta.requires_grad_(True)
             adversarial = (clean + delta).clamp(0.0, 1.0)
             components = self.objective_components(
-                adversarial, categories, target_label, mode
+                adversarial,
+                categories,
+                target_label,
+                mode,
+                spatial_masks=spatial_masks,
             )
             global_gradient_norm = float("nan")
             local_gradient_norm = float("nan")
@@ -324,18 +395,23 @@ class TargetedPGD:
                     categories,
                     target_label,
                     mode,
+                    spatial_masks=spatial_masks,
                 )
             history.append(
                 {
                     "step": float(step + 1),
                     "pre_update_total_loss": pre_update_loss,
                     "total_loss": float(updated_components["total"].detach()),
-                    "global_loss": float(updated_components["global"].detach())
-                    if "global" in updated_components
-                    else float("nan"),
-                    "local_loss": float(updated_components["local"].detach())
-                    if "local" in updated_components
-                    else float("nan"),
+                    "global_loss": (
+                        float(updated_components["global"].detach())
+                        if "global" in updated_components
+                        else float("nan")
+                    ),
+                    "local_loss": (
+                        float(updated_components["local"].detach())
+                        if "local" in updated_components
+                        else float("nan")
+                    ),
                     "global_gradient_l2": global_gradient_norm,
                     "local_gradient_l2": local_gradient_norm,
                     "combined_gradient_l2": float(gradient.norm().detach()),
@@ -348,7 +424,12 @@ class TargetedPGD:
                     float(updated_components["total"].detach()),
                 )
         final_losses = self._diagnostic_losses(
-            diagnostic_samples, image_loader, delta, target_label, mode
+            diagnostic_samples,
+            image_loader,
+            delta,
+            target_label,
+            mode,
+            mask_loader=mask_loader,
         )
         return UniversalAttackResult(
             delta=delta.detach(),
@@ -365,6 +446,7 @@ class TargetedPGD:
         delta: torch.Tensor,
         target_label: int,
         mode: str,
+        mask_loader: Optional[Callable[[object], torch.Tensor]] = None,
     ) -> Dict[str, float]:
         """Average losses on one fixed bounded subset before and after PGD."""
 
@@ -381,18 +463,27 @@ class TargetedPGD:
                 categories = [
                     str(getattr(sample, "category")) for sample in batch_samples
                 ]
+                spatial_masks = (
+                    torch.stack([mask_loader(sample) for sample in batch_samples]).to(
+                        self.device
+                    )
+                    if mask_loader is not None and mode in {"local", "combined"}
+                    else None
+                )
                 components = self.objective_components(
-                    attacked, categories, target_label, mode
+                    attacked,
+                    categories,
+                    target_label,
+                    mode,
+                    spatial_masks=spatial_masks,
                 )
                 for key, value in components.items():
                     totals[key] += float(value.detach()) * len(batch_samples)
                     counts[key] += len(batch_samples)
-        return {
-            key: totals[key] / counts[key]
-            for key in totals
-            if counts[key] > 0
-        }
+        return {key: totals[key] / counts[key] for key in totals if counts[key] > 0}
 
     @staticmethod
-    def apply_universal(clean_images: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
+    def apply_universal(
+        clean_images: torch.Tensor, delta: torch.Tensor
+    ) -> torch.Tensor:
         return (clean_images.to(delta.device) + delta).clamp(0.0, 1.0)

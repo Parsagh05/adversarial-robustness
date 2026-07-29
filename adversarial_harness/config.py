@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
@@ -43,6 +44,8 @@ class AttackConfig:
     temperature: float = 0.07
     global_weight: float = 0.2
     local_weight: float = 0.8
+    mask_local_loss: bool = True
+    local_background_weight: float = 0.1
     feature_layers: Tuple[int, ...] = (6, 12, 18, 24)
     scopes: Tuple[str, ...] = VALID_SCOPES
     directions: Tuple[str, ...] = VALID_DIRECTIONS
@@ -84,6 +87,8 @@ class AttackConfig:
             raise ValueError("loss weights cannot be negative")
         if self.global_weight + self.local_weight <= 0:
             raise ValueError("at least one loss weight must be positive")
+        if not 0.0 <= self.local_background_weight <= 1.0:
+            raise ValueError("local_background_weight must be in [0, 1]")
 
 
 @dataclass
@@ -116,6 +121,14 @@ class ExperimentConfig:
     threshold_mode: str = "normal_train_quantile"
     threshold_quantile: float = 0.95
     thresholds_path: Optional[str] = None
+    # A map-direction success flag/rate is only reported when this threshold
+    # has been frozen before evaluation (for example from a held-out,
+    # norm-matched random-perturbation baseline). Continuous shifts are always
+    # reported and remain the primary local-map results.
+    map_success_min_mean_shift: Optional[float] = None
+    map_success_min_pixel_fraction: float = 0.5
+    map_false_positive_threshold: float = 2.0
+    localization_success_min_p_ap_drop: float = 0.0
     max_samples_per_category: Optional[int] = None
     use_split_manifest: bool = False
     split_manifest_csv: Optional[str] = None
@@ -130,8 +143,7 @@ class ExperimentConfig:
                 f"dataset must be one of {VALID_DATASETS}, got {self.dataset!r}"
             )
         if (
-            self.dataset
-            in {"mvtec", "both", "mvtec_to_visa", "visa_to_mvtec"}
+            self.dataset in {"mvtec", "both", "mvtec_to_visa", "visa_to_mvtec"}
             and not self.mvtec_root
         ):
             raise ValueError(f"mvtec_root is required when dataset={self.dataset!r}")
@@ -180,7 +192,21 @@ class ExperimentConfig:
             raise ValueError("threshold_quantile must be in (0, 1)")
         if self.thresholds_path is not None:
             self.thresholds_path = str(self.thresholds_path)
-        if self.max_samples_per_category is not None and self.max_samples_per_category < 2:
+        if (
+            self.map_success_min_mean_shift is not None
+            and self.map_success_min_mean_shift < 0
+        ):
+            raise ValueError("map_success_min_mean_shift cannot be negative")
+        if not 0.0 <= self.map_success_min_pixel_fraction <= 1.0:
+            raise ValueError("map_success_min_pixel_fraction must be in [0, 1]")
+        if not math.isfinite(self.map_false_positive_threshold):
+            raise ValueError("map_false_positive_threshold must be finite")
+        if self.localization_success_min_p_ap_drop < 0:
+            raise ValueError("localization_success_min_p_ap_drop cannot be negative")
+        if (
+            self.max_samples_per_category is not None
+            and self.max_samples_per_category < 2
+        ):
             raise ValueError(
                 "max_samples_per_category must be at least 2 so both labels remain present"
             )

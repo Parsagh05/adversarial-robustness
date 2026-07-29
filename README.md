@@ -34,8 +34,10 @@ MVTec or VisA image
 The surrogate uses WinCLIP-style prompt ensembles and keeps every prompt embedding separate. The attack can optimize:
 
 - `global`: the projected image/CLS feature, mainly targeting image-level detection.
-- `local`: spatial patch features from layers 6, 12, 18, and 24, mainly targeting localization.
+- `local`: spatial patch features from layers 6, 12, 18, and 24. For anomalous source images, the ground-truth defect mask focuses the target loss on defect patches while background patches receive weight `0.1`; for normal source images, which have no positive mask, the false-alarm objective targets the complete patch grid.
 - `combined`: `0.2 * global_loss + 0.8 * local_loss` by default. The local term is weighted more heavily to compensate for the larger global-gradient magnitude observed with equal weights.
+
+The mask guides only the differentiable public-surrogate objective. AnomalyCLIP remains black-box and is never queried during optimization. Set `mask_local_loss=False` (CLI: `--no-mask-local-loss`) to recover the former uniform all-patch objective, or change `local_background_weight` to control how strongly anomalous-image background patches contribute.
 
 The perturbation scope controls how widely the optimized `delta` is shared:
 
@@ -114,7 +116,8 @@ The full Kaggle experiment uses the following settings:
 | Random start | Enabled |
 | Prompt temperature | `0.07` |
 | Feature layers | `6, 12, 18, 24` |
-| Global/local weights | `0.5 / 0.5` |
+| Global/local weights | `0.2 / 0.8` |
+| Mask-aware local loss | Defect weight `1.0`, background weight `0.1`; normal masks fall back to all patches |
 | Per-image / universal batch size | `1 / 2` |
 | Target batch size | `2` |
 | Universal protocol | `held_out` |
@@ -137,7 +140,7 @@ CLIP normalization happens inside the differentiable surrogate. The target recei
 
 ## Metrics
 
-All detection, localization, and success-rate metrics are reported on a `0-100` scale. `L-infinity`, SSIM, LPIPS, raw scores, and decision thresholds are not percentages.
+Dataset-level detection/localization metrics and success rates are reported on a `0-100` scale. Per-image pixel/area fractions use `0-1`. `L-infinity`, SSIM, LPIPS, raw scores, raw anomaly-map shifts/contrasts, and decision thresholds are not percentages.
 
 | Metric | Meaning | Preferred direction |
 |---|---|---|
@@ -146,8 +149,15 @@ All detection, localization, and success-rate metrics are reported on a `0-100` 
 | P-AUROC | Pixel AUROC after flattening all predicted map pixels and ground-truth mask pixels in a category. | Higher detector performance |
 | AUPRO | Region-overlap score integrated up to FPR `0.30`; weights connected defect regions rather than only individual pixels. | Higher detector performance |
 | Classification flip rate | Among attacked source images classified correctly when clean, the percentage moved across the frozen threshold into the targeted wrong class. | Higher attack effectiveness |
-| Targeted success rate (all) | Percentage of all attacked source images predicted as the target class, including images already wrong when clean. | Higher attack effectiveness |
+| Image targeted success rate (all) | Percentage of all attacked source images predicted as the target class, including images already wrong when clean. | Higher classification attack effectiveness |
 | Directional score shift | Anomaly-score movement toward the intended target class; it does not require a threshold crossing. | Positive means intended movement |
+| Directional map shift | Per-image mean of `s * (adversarial_map - clean_map)`, where `s=+1` targets abnormal and `s=-1` targets normal. | Positive means intended map movement |
+| Directional map pixel fraction | Fraction in `[0, 1]` of pixels whose anomaly value moved toward the target class. | Higher dense local effect |
+| Map-direction success rate | Percentage satisfying the frozen mean-shift and pixel-fraction criteria. The pixel fraction must be strictly greater than `0.5`. The rate is undefined unless `map_success_min_mean_shift` is supplied from a pre-evaluation calibration; continuous map metrics remain primary. | Higher local attack effectiveness |
+| False-positive map area | For normal source images, the fraction of raw resized map pixels above the frozen `map_false_positive_threshold` (`2.0` by default for the four-map AnomalyCLIP sum), reported clean, adversarial, and as adversarial-minus-clean increase. | Positive increase means more false-positive area |
+| Per-image P-AUROC/AP/AUPRO drop | Clean minus adversarial localization performance for each anomalous source image. Undefined for normal images. | Positive means localization degraded |
+| Localization contrast drop | Reduction in mean defect-versus-background anomaly-map contrast. | Positive means defect localization weakened |
+| Localization degradation success rate | Percentage of anomalous source images whose per-image pixel AP drop exceeds the configured frozen minimum. | Higher localization attack effectiveness |
 | L-infinity | Maximum absolute pixel change between clean and adversarial images in `[0, 1]`. | Lower distortion |
 | SSIM | Structural similarity between clean and adversarial images. | Closer to `1` means more similar |
 | LPIPS | Learned perceptual distance between clean and adversarial images. | Lower means more similar |
@@ -157,6 +167,8 @@ For the threshold-dependent success metrics, category `c` uses a frozen threshol
 ```text
 prediction = 1[anomaly_score >= t_c]
 ```
+
+Image classification success, target-direction map success, and localization degradation are deliberately separate. A uniform map suppression can move in the target direction while preserving localization rankings, and a classification flip can occur without meaningful localization damage. Freeze `map_success_min_mean_shift` from a held-out, norm-matched random-perturbation baseline before requesting a binary map-success rate; when it is omitted, the continuous map metrics are still reported but the flag and rate are undefined.
 
 Each `t_c` is the configured quantile—`0.95` by default—of AnomalyCLIP scores on that category's normal training images from the evaluation dataset. Labeled test anomalies are never used to select thresholds. I-AUROC, image AP, P-AUROC, and AUPRO use continuous scores and do not depend on this threshold.
 
@@ -247,10 +259,10 @@ output_root/
 ```
 
 - `summary.csv` is the main result table. It contains one row per category plus a `__macro__` row for each condition.
-- `per_image.csv` contains attacked source images and their clean/adversarial scores, predictions, success flags, and distortion metrics.
+- `per_image.csv` contains attacked source images and their clean/adversarial scores, explicit image-targeted success, directional map metrics, per-image localization metrics, and distortion metrics.
 - `target_outputs.npz` stores the evaluated sample IDs, labels, clean/adversarial scores, and low-resolution anomaly maps for later metric auditing.
 - `optimization.json`, `loss_curve.csv`, and `surrogate_predictions.csv` diagnose whether optimization succeeded on the surrogate. They are not AnomalyCLIP target results.
-- Universal perturbations and representative adversarial examples are saved when enabled.
+- Universal perturbations and representative adversarial examples are saved when enabled. Each category can include `classification_flip_example`, `strongest_map_direction_example`, `largest_localization_drop_example`, `map_direction_failure_example`, and `deterministic_random`. The strongest-map and largest-localization-drop roles are selected from all applicable images, independently of binary success thresholds. Every saved example manifest records classification, map-direction, and localization outcomes separately.
 
 ## Project structure
 

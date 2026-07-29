@@ -48,9 +48,7 @@ def _binary_auroc(labels: Sequence[int], scores: Sequence[float]) -> float:
     return float(trapezoid(tpr, fpr))
 
 
-def _binary_average_precision(
-    labels: Sequence[int], scores: Sequence[float]
-) -> float:
+def _binary_average_precision(labels: Sequence[int], scores: Sequence[float]) -> float:
     false_positives, true_positives = _binary_curve(labels, scores)
     precision = true_positives / (true_positives + false_positives)
     recall = true_positives / true_positives[-1]
@@ -66,6 +64,43 @@ def image_metrics(labels: Sequence[int], scores: Sequence[float]) -> Dict[str, f
     return {
         "i_auroc": 100.0 * _binary_auroc(labels_array, scores_array),
         "i_ap": 100.0 * _binary_average_precision(labels_array, scores_array),
+    }
+
+
+def per_image_classification_metrics(
+    clean_score: float,
+    adversarial_score: float,
+    decision_threshold: float,
+    source_label: int,
+    target_label: int,
+) -> Dict[str, float]:
+    """Return explicit per-image classification outcomes at a frozen threshold."""
+
+    if source_label not in (0, 1) or target_label not in (0, 1):
+        raise ValueError("source_label and target_label must be 0 or 1")
+    if source_label == target_label:
+        raise ValueError("source_label and target_label must differ")
+    values = np.asarray(
+        [clean_score, adversarial_score, decision_threshold], dtype=np.float64
+    )
+    if not np.isfinite(values).all():
+        raise ValueError("Classification scores and threshold must be finite")
+
+    clean_prediction = int(clean_score >= decision_threshold)
+    adversarial_prediction = int(adversarial_score >= decision_threshold)
+    clean_correct = clean_prediction == source_label
+    image_targeted_success = adversarial_prediction == target_label
+    score_shift = float(adversarial_score - clean_score)
+    directional_score_shift = score_shift if target_label == 1 else -score_shift
+    return {
+        "clean_prediction": clean_prediction,
+        "adversarial_prediction": adversarial_prediction,
+        "clean_correct_for_source": int(clean_correct),
+        "image_targeted_success": int(image_targeted_success),
+        "classification_flip": int(clean_correct and image_targeted_success),
+        "score_shift": score_shift,
+        "directional_score_shift": directional_score_shift,
+        "score_directional_success": int(directional_score_shift > 0.0),
     }
 
 
@@ -164,6 +199,195 @@ def pixel_metrics(
     }
 
 
+def _single_image_aupro(
+    mask: np.ndarray,
+    anomaly_map: np.ndarray,
+    fpr_limit: float,
+) -> float:
+    """Return exact per-image AUPRO without materializing threshold masks.
+
+    Each foreground pixel contributes its region-normalized share of PRO while
+    each background pixel contributes its share of FPR. Sorting once by score
+    therefore traces the same threshold curve much more cheaply than repeatedly
+    thresholding a full-resolution map.
+    """
+
+    binary_mask = np.asarray(mask, dtype=bool)
+    scores = np.asarray(anomaly_map, dtype=np.float64)
+    component_map = connected_components(binary_mask, connectivity=2)
+    region_count = int(component_map.max())
+    negative_count = int((~binary_mask).sum())
+    if negative_count == 0 or region_count == 0:
+        return float("nan")
+
+    pro_weights = np.zeros(binary_mask.shape, dtype=np.float64)
+    for region_index in range(1, region_count + 1):
+        region = component_map == region_index
+        pro_weights[region] = 1.0 / (region_count * int(region.sum()))
+
+    flat_scores = scores.reshape(-1)
+    order = np.argsort(flat_scores, kind="mergesort")[::-1]
+    sorted_scores = flat_scores[order]
+    sorted_background = (~binary_mask).reshape(-1)[order]
+    sorted_pro_weights = pro_weights.reshape(-1)[order]
+    distinct_indices = np.r_[
+        np.where(np.diff(sorted_scores))[0], sorted_scores.size - 1
+    ]
+    fprs = np.cumsum(sorted_background, dtype=np.float64)[distinct_indices]
+    fprs /= negative_count
+    pros = np.cumsum(sorted_pro_weights, dtype=np.float64)[distinct_indices]
+    fprs = np.r_[0.0, fprs]
+    pros = np.r_[0.0, pros]
+
+    # FPR is already non-decreasing and PRO is non-decreasing within an FPR
+    # plateau. Keep the last point of each plateau in linear time.
+    plateau_ends = np.r_[np.where(np.diff(fprs) > 0.0)[0], fprs.size - 1]
+    unique_fprs = fprs[plateau_ends]
+    unique_pros = pros[plateau_ends]
+    boundary_pro = float(np.interp(fpr_limit, unique_fprs, unique_pros))
+    keep = unique_fprs < fpr_limit
+    x = np.concatenate([unique_fprs[keep], [fpr_limit]])
+    y = np.concatenate([unique_pros[keep], [boundary_pro]])
+    trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    return 100.0 * float(trapezoid(y, x) / fpr_limit)
+
+
+def per_image_map_metrics(
+    mask: np.ndarray,
+    clean_map: np.ndarray,
+    adversarial_map: np.ndarray,
+    target_label: int,
+    *,
+    aupro_fpr_limit: float = 0.30,
+    map_success_min_mean_shift: Optional[float] = None,
+    map_success_min_pixel_fraction: float = 0.5,
+    map_false_positive_threshold: float = 2.0,
+    localization_success_min_p_ap_drop: float = 0.0,
+) -> Dict[str, float]:
+    """Measure target-direction map change and per-image localization damage.
+
+    Map-direction metrics are defined for normal and anomalous source images.
+    Mask-dependent localization metrics are NaN for normal images because an
+    all-zero mask has no positive region to localize.
+    """
+
+    clean = np.asarray(clean_map, dtype=np.float64)
+    adversarial = np.asarray(adversarial_map, dtype=np.float64)
+    binary_mask = np.asarray(mask) > 0
+    if clean.shape != adversarial.shape or clean.shape != binary_mask.shape:
+        raise ValueError("Mask and clean/adversarial maps must have matching shapes")
+    if clean.ndim != 2:
+        raise ValueError("Per-image map metrics require two-dimensional maps")
+    if not np.isfinite(clean).all() or not np.isfinite(adversarial).all():
+        raise ValueError("Per-image anomaly maps must be finite")
+    if target_label not in (0, 1):
+        raise ValueError("target_label must be 0 or 1")
+    if not 0.0 <= map_success_min_pixel_fraction <= 1.0:
+        raise ValueError("map_success_min_pixel_fraction must be in [0, 1]")
+    if not np.isfinite(map_false_positive_threshold):
+        raise ValueError("map_false_positive_threshold must be finite")
+
+    direction = 1.0 if target_label == 1 else -1.0
+    directional_delta = direction * (adversarial - clean)
+    directional_mean_shift = float(directional_delta.mean())
+    directional_pixel_fraction = float((directional_delta > 0.0).mean())
+    result = {
+        "map_directional_mean_shift": directional_mean_shift,
+        "map_directional_pixel_fraction": directional_pixel_fraction,
+        "map_absolute_shift": float(np.abs(adversarial - clean).mean()),
+        "map_directional_success": (
+            int(
+                directional_mean_shift > map_success_min_mean_shift
+                and directional_pixel_fraction > map_success_min_pixel_fraction
+            )
+            if map_success_min_mean_shift is not None
+            else float("nan")
+        ),
+        "defect_directional_mean_shift": float("nan"),
+        "background_directional_mean_shift": (
+            float(directional_delta[~binary_mask].mean())
+            if (~binary_mask).any()
+            else float("nan")
+        ),
+        "clean_false_positive_map_area": float("nan"),
+        "adversarial_false_positive_map_area": float("nan"),
+        "false_positive_map_area_increase": float("nan"),
+        "clean_image_p_auroc": float("nan"),
+        "adversarial_image_p_auroc": float("nan"),
+        "image_p_auroc_drop": float("nan"),
+        "clean_image_p_ap": float("nan"),
+        "adversarial_image_p_ap": float("nan"),
+        "image_p_ap_drop": float("nan"),
+        "clean_image_aupro": float("nan"),
+        "adversarial_image_aupro": float("nan"),
+        "image_aupro_drop": float("nan"),
+        "clean_localization_contrast": float("nan"),
+        "adversarial_localization_contrast": float("nan"),
+        "localization_contrast_drop": float("nan"),
+        "localization_degradation_success": float("nan"),
+    }
+
+    if not binary_mask.any():
+        clean_false_positive_area = float(
+            (clean > map_false_positive_threshold).mean()
+        )
+        adversarial_false_positive_area = float(
+            (adversarial > map_false_positive_threshold).mean()
+        )
+        result.update(
+            {
+                "clean_false_positive_map_area": clean_false_positive_area,
+                "adversarial_false_positive_map_area": (
+                    adversarial_false_positive_area
+                ),
+                "false_positive_map_area_increase": (
+                    adversarial_false_positive_area - clean_false_positive_area
+                ),
+            }
+        )
+        return result
+    if binary_mask.all():
+        return result
+
+    result["defect_directional_mean_shift"] = float(
+        directional_delta[binary_mask].mean()
+    )
+    flat_mask = binary_mask.reshape(-1).astype(np.uint8)
+    clean_flat = clean.reshape(-1)
+    adversarial_flat = adversarial.reshape(-1)
+    clean_p_auroc = 100.0 * _binary_auroc(flat_mask, clean_flat)
+    adversarial_p_auroc = 100.0 * _binary_auroc(flat_mask, adversarial_flat)
+    clean_p_ap = 100.0 * _binary_average_precision(flat_mask, clean_flat)
+    adversarial_p_ap = 100.0 * _binary_average_precision(flat_mask, adversarial_flat)
+    clean_aupro = _single_image_aupro(binary_mask, clean, aupro_fpr_limit)
+    adversarial_aupro = _single_image_aupro(binary_mask, adversarial, aupro_fpr_limit)
+    clean_contrast = float(clean[binary_mask].mean() - clean[~binary_mask].mean())
+    adversarial_contrast = float(
+        adversarial[binary_mask].mean() - adversarial[~binary_mask].mean()
+    )
+    p_ap_drop = clean_p_ap - adversarial_p_ap
+    result.update(
+        {
+            "clean_image_p_auroc": clean_p_auroc,
+            "adversarial_image_p_auroc": adversarial_p_auroc,
+            "image_p_auroc_drop": clean_p_auroc - adversarial_p_auroc,
+            "clean_image_p_ap": clean_p_ap,
+            "adversarial_image_p_ap": adversarial_p_ap,
+            "image_p_ap_drop": p_ap_drop,
+            "clean_image_aupro": clean_aupro,
+            "adversarial_image_aupro": adversarial_aupro,
+            "image_aupro_drop": clean_aupro - adversarial_aupro,
+            "clean_localization_contrast": clean_contrast,
+            "adversarial_localization_contrast": adversarial_contrast,
+            "localization_contrast_drop": clean_contrast - adversarial_contrast,
+            "localization_degradation_success": int(
+                p_ap_drop > localization_success_min_p_ap_drop
+            ),
+        }
+    )
+    return result
+
+
 class LPIPSMetric:
     """Small optional wrapper so the benchmark can report missing LPIPS clearly."""
 
@@ -177,7 +401,9 @@ class LPIPSMetric:
             import lpips
 
             self.model = lpips.LPIPS(net=backbone).to(self.device).eval()
-        except Exception as exc:  # dependency/download failures remain explicit in output
+        except (
+            Exception
+        ) as exc:  # dependency/download failures remain explicit in output
             self.error = repr(exc)
 
     def __call__(self, clean: torch.Tensor, adversarial: torch.Tensor) -> np.ndarray:

@@ -32,12 +32,24 @@ class DatasetSelectionTests(unittest.TestCase):
                 ("test", "anomaly", 2),
             ):
                 for index in range(count):
-                    image = Path(category) / "Data" / "Images" / label.title() / f"{split}_{index}.JPG"
+                    image = (
+                        Path(category)
+                        / "Data"
+                        / "Images"
+                        / label.title()
+                        / f"{split}_{index}.JPG"
+                    )
                     (root / image).parent.mkdir(parents=True, exist_ok=True)
                     (root / image).write_bytes(b"image")
                     mask = ""
                     if label == "anomaly":
-                        mask_path = Path(category) / "Data" / "Masks" / "Anomaly" / f"{split}_{index}.png"
+                        mask_path = (
+                            Path(category)
+                            / "Data"
+                            / "Masks"
+                            / "Anomaly"
+                            / f"{split}_{index}.png"
+                        )
                         (root / mask_path).parent.mkdir(parents=True, exist_ok=True)
                         (root / mask_path).write_bytes(b"mask")
                         mask = mask_path.as_posix()
@@ -67,13 +79,7 @@ class DatasetSelectionTests(unittest.TestCase):
                 image.write_bytes(b"image")
         for index in range(2):
             anomaly = root / "bottle" / "test" / "broken" / f"{index:03d}.png"
-            mask = (
-                root
-                / "bottle"
-                / "ground_truth"
-                / "broken"
-                / f"{index:03d}_mask.png"
-            )
+            mask = root / "bottle" / "ground_truth" / "broken" / f"{index:03d}_mask.png"
             anomaly.parent.mkdir(parents=True, exist_ok=True)
             mask.parent.mkdir(parents=True, exist_ok=True)
             anomaly.write_bytes(b"image")
@@ -90,9 +96,13 @@ class DatasetSelectionTests(unittest.TestCase):
             self.assertEqual([sample.label for sample in test].count(1), 2)
             self.assertTrue(all(sample.dataset == "visa" for sample in test + train))
             self.assertTrue(
-                all(sample.mask_path is not None for sample in test if sample.label == 1)
+                all(
+                    sample.mask_path is not None for sample in test if sample.label == 1
+                )
             )
-            self.assertTrue(all(sample.protocol_id.startswith("test/visa/") for sample in test))
+            self.assertTrue(
+                all(sample.protocol_id.startswith("test/visa/") for sample in test)
+            )
             self.assertEqual(len(train), 2)
             lookup = _samples_by_id(test)
             for sample in test:
@@ -119,7 +129,7 @@ class DatasetSelectionTests(unittest.TestCase):
                 anomalyclip_checkpoint="checkpoint.pth",
                 metric_size=4,
                 anomaly_map_sigma=0.0,
-                save_adversarial_examples=1,
+                save_adversarial_examples=2,
                 attack=AttackConfig(image_size=4),
             )
             experiment = AdversarialExperiment(config)
@@ -129,8 +139,29 @@ class DatasetSelectionTests(unittest.TestCase):
                 {
                     "sample_id": "visa/candle/normal/0214",
                     "category": "candle",
-                    "targeted_success": 1,
+                    "target_label": 1,
+                    "clean_correct_for_source": 1,
+                    "image_targeted_success": 1,
+                    "classification_flip": 1,
                     "directional_score_shift": 0.25,
+                    # Strongest-map selection must not depend on an optional
+                    # calibrated binary success flag being available.
+                    "map_directional_success": float("nan"),
+                    "map_directional_mean_shift": 0.5,
+                    "map_directional_pixel_fraction": 1.0,
+                    "map_absolute_shift": 0.5,
+                    "map_false_positive_threshold": 2.0,
+                    "clean_false_positive_map_area": 0.0,
+                    "adversarial_false_positive_map_area": 0.5,
+                    "false_positive_map_area_increase": 0.5,
+                    "image_p_ap_drop": float("nan"),
+                    "clean_image_p_ap": float("nan"),
+                    "adversarial_image_p_ap": float("nan"),
+                    "image_aupro_drop": float("nan"),
+                    "clean_image_aupro": float("nan"),
+                    "adversarial_image_aupro": float("nan"),
+                    "localization_contrast_drop": float("nan"),
+                    "localization_degradation_success": float("nan"),
                     "lpips": 0.01,
                     "ssim": 0.99,
                     "clean_score": 0.1,
@@ -145,19 +176,28 @@ class DatasetSelectionTests(unittest.TestCase):
                 np.ones((1, 2, 2), dtype=np.float32),
                 {"all_categories": torch.zeros((1, 3, 4, 4))},
                 "dataset",
-                "dataset__normal_to_abnormal__global",
+                "dataset__normal_to_abnormal__local",
+                "local",
             )
 
             manifest = (
                 Path(config.output_root)
                 / "adversarial_examples"
-                / "dataset__normal_to_abnormal__global"
+                / "dataset__normal_to_abnormal__local"
                 / "manifest.json"
             )
             self.assertTrue(manifest.is_file())
             payload = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertEqual(
-                payload["categories"]["candle"]["successful_attack"]["sample_id"],
+                payload["categories"]["candle"]["classification_flip_example"][
+                    "sample_id"
+                ],
+                sample.protocol_id,
+            )
+            self.assertEqual(
+                payload["categories"]["candle"]["strongest_map_direction_example"][
+                    "sample_id"
+                ],
                 sample.protocol_id,
             )
 
@@ -175,9 +215,15 @@ class DatasetSelectionTests(unittest.TestCase):
                 categories=("bottle", "candle"),
             )
             self.assertEqual({sample.dataset for sample in samples}, {"mvtec", "visa"})
-            self.assertEqual({sample.category for sample in samples}, {"bottle", "candle"})
-            self.assertEqual([sample.index for sample in samples], list(range(len(samples))))
-            self.assertEqual(len({sample.protocol_id for sample in samples}), len(samples))
+            self.assertEqual(
+                {sample.category for sample in samples}, {"bottle", "candle"}
+            )
+            self.assertEqual(
+                [sample.index for sample in samples], list(range(len(samples)))
+            )
+            self.assertEqual(
+                len({sample.protocol_id for sample in samples}), len(samples)
+            )
 
     def test_generator_and_loader_support_visa_and_both(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -284,9 +330,7 @@ class DatasetSelectionTests(unittest.TestCase):
             target_train = discover_anomaly_datasets(
                 "visa", visa_root=str(visa), train_normal=True
             )
-            source_test = discover_anomaly_datasets(
-                "mvtec", mvtec_root=str(mvtec)
-            )
+            source_test = discover_anomaly_datasets("mvtec", mvtec_root=str(mvtec))
             source_train = discover_anomaly_datasets(
                 "mvtec", mvtec_root=str(mvtec), train_normal=True
             )
@@ -351,7 +395,10 @@ class DatasetSelectionTests(unittest.TestCase):
                 source_train_normal_samples=source_train,
             )
             self.assertTrue(
-                all(experiment.split_assignments[sample.protocol_id] == "fit" for sample in fit)
+                all(
+                    experiment.split_assignments[sample.protocol_id] == "fit"
+                    for sample in fit
+                )
             )
             self.assertTrue(
                 all(

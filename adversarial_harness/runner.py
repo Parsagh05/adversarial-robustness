@@ -30,6 +30,8 @@ from .dataset import (
 from .metrics import (
     LPIPSMetric,
     image_metrics,
+    per_image_classification_metrics,
+    per_image_map_metrics,
     perceptual_metrics,
     pixel_metrics,
     resize_anomaly_maps,
@@ -55,7 +57,21 @@ SUMMARY_FIELDS = (
     "source_count",
     "eligible_clean_correct_count",
     "classification_flip_rate",
-    "targeted_success_rate_all",
+    "image_targeted_success_rate_all",
+    "map_directional_success_rate",
+    "mean_map_directional_shift",
+    "mean_map_directional_pixel_fraction",
+    "mean_map_absolute_shift",
+    "mean_defect_directional_shift",
+    "mean_background_directional_shift",
+    "mean_clean_false_positive_map_area",
+    "mean_adversarial_false_positive_map_area",
+    "mean_false_positive_map_area_increase",
+    "mean_image_p_auroc_drop",
+    "mean_image_p_ap_drop",
+    "mean_image_aupro_drop",
+    "mean_localization_contrast_drop",
+    "localization_degradation_success_rate",
     "clean_i_auroc",
     "adversarial_i_auroc",
     "delta_i_auroc",
@@ -97,10 +113,34 @@ DETAIL_FIELDS = (
     "clean_prediction",
     "adversarial_prediction",
     "clean_correct_for_source",
-    "targeted_success",
+    "image_targeted_success",
+    "classification_flip",
     "score_shift",
     "directional_score_shift",
-    "directional_success",
+    "score_directional_success",
+    "map_directional_mean_shift",
+    "map_directional_pixel_fraction",
+    "map_absolute_shift",
+    "map_directional_success",
+    "defect_directional_mean_shift",
+    "background_directional_mean_shift",
+    "map_false_positive_threshold",
+    "clean_false_positive_map_area",
+    "adversarial_false_positive_map_area",
+    "false_positive_map_area_increase",
+    "clean_image_p_auroc",
+    "adversarial_image_p_auroc",
+    "image_p_auroc_drop",
+    "clean_image_p_ap",
+    "adversarial_image_p_ap",
+    "image_p_ap_drop",
+    "clean_image_aupro",
+    "adversarial_image_aupro",
+    "image_aupro_drop",
+    "clean_localization_contrast",
+    "adversarial_localization_contrast",
+    "localization_contrast_drop",
+    "localization_degradation_success",
     "linf",
     "ssim",
     "lpips",
@@ -162,7 +202,9 @@ def _write_json(path: Path, data: object) -> None:
     temporary.replace(path)
 
 
-def _write_csv(path: Path, rows: Sequence[Mapping[str, object]], fields: Sequence[str]) -> None:
+def _write_csv(
+    path: Path, rows: Sequence[Mapping[str, object]], fields: Sequence[str]
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", newline="", encoding="utf-8") as handle:
@@ -213,23 +255,31 @@ def _samples_by_id(
 def _save_tensor_image(tensor: torch.Tensor, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     array = (
-        tensor.detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy() * 255.0
-    ).round().astype(np.uint8)
+        (tensor.detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy() * 255.0)
+        .round()
+        .astype(np.uint8)
+    )
     Image.fromarray(array).save(path)
 
 
 def _tensor_uint8(tensor: torch.Tensor) -> np.ndarray:
     return (
-        tensor.detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy() * 255.0
-    ).round().astype(np.uint8)
+        (tensor.detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy() * 255.0)
+        .round()
+        .astype(np.uint8)
+    )
 
 
-def _normalized_pair(first: np.ndarray, second: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _normalized_pair(
+    first: np.ndarray, second: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     minimum = float(min(np.min(first), np.min(second)))
     maximum = float(max(np.max(first), np.max(second)))
     scale = maximum - minimum
     if scale <= 1e-12:
-        return np.zeros_like(first, dtype=np.float32), np.zeros_like(second, dtype=np.float32)
+        return np.zeros_like(first, dtype=np.float32), np.zeros_like(
+            second, dtype=np.float32
+        )
     return (
         ((first - minimum) / scale).astype(np.float32),
         ((second - minimum) / scale).astype(np.float32),
@@ -277,6 +327,13 @@ class AdversarialExperiment:
     def image_loader(self, sample: MVTecSample) -> torch.Tensor:
         return load_image_tensor(sample, self.config.attack.image_size)
 
+    def attack_mask_loader(self, sample: MVTecSample) -> torch.Tensor:
+        """Load a binary spatial mask used only by the public surrogate loss."""
+
+        return torch.from_numpy(
+            load_mask(sample, self.config.attack.image_size)
+        ).float()
+
     def _protocol_samples(
         self,
         test_samples: Sequence[MVTecSample],
@@ -289,7 +346,9 @@ class AdversarialExperiment:
         """Return fit sources, evaluation sources, and all evaluation samples."""
 
         source_label, _ = direction_labels(direction)
-        test_sources = [sample for sample in test_samples if sample.label == source_label]
+        test_sources = [
+            sample for sample in test_samples if sample.label == source_label
+        ]
         if self.config.is_cross_dataset:
             cross_fit_pool = (
                 source_train_normal_samples
@@ -384,7 +443,9 @@ class AdversarialExperiment:
                 else:
                     evaluation_ids.add(sample_id)
 
-        fit_sources = [sample for sample in test_sources if sample.protocol_id in fit_ids]
+        fit_sources = [
+            sample for sample in test_sources if sample.protocol_id in fit_ids
+        ]
         evaluation_sources = [
             sample for sample in test_sources if sample.protocol_id in evaluation_ids
         ]
@@ -395,9 +456,7 @@ class AdversarialExperiment:
         ]
         return fit_sources, evaluation_sources, evaluation_samples
 
-    def _diagnostic_subset(
-        self, samples: Sequence[MVTecSample]
-    ) -> List[MVTecSample]:
+    def _diagnostic_subset(self, samples: Sequence[MVTecSample]) -> List[MVTecSample]:
         """Choose a deterministic category-balanced diagnostic subset."""
 
         grouped = group_by_category(samples)
@@ -433,7 +492,9 @@ class AdversarialExperiment:
             categories=categories,
             device=self.config.device,
             feature_layers=self.config.attack.feature_layers,
-            clip_download_root=str(self.config.target_kwargs.get("clip_download_root", "")),
+            clip_download_root=str(
+                self.config.target_kwargs.get("clip_download_root", "")
+            ),
         )
 
     def _checkpoint_fingerprint(self) -> Dict[str, object]:
@@ -515,7 +576,9 @@ class AdversarialExperiment:
         destination: Path,
     ) -> Dict[str, float]:
         if self.target is None:
-            raise RuntimeError("Target model must be loaded before threshold calibration")
+            raise RuntimeError(
+                "Target model must be loaded before threshold calibration"
+            )
         grouped = group_by_category(train_good_samples)
         scores_by_category: Dict[str, List[float]] = {
             category: [] for category in grouped
@@ -546,7 +609,9 @@ class AdversarialExperiment:
         for category in sorted(scores_by_category):
             values = np.asarray(scores_by_category[category], dtype=np.float64)
             if values.size == 0:
-                raise RuntimeError(f"No normal-training calibration scores for {category}")
+                raise RuntimeError(
+                    f"No normal-training calibration scores for {category}"
+                )
             threshold = float(np.quantile(values, self.config.threshold_quantile))
             thresholds[category] = threshold
             category_records[category] = {
@@ -720,7 +785,9 @@ class AdversarialExperiment:
                         "adversarial_global_score": float(
                             attacked_values["global_score"][position]
                         ),
-                        "clean_local_score": float(clean_values["local_score"][position]),
+                        "clean_local_score": float(
+                            clean_values["local_score"][position]
+                        ),
                         "adversarial_local_score": float(
                             attacked_values["local_score"][position]
                         ),
@@ -744,6 +811,7 @@ class AdversarialExperiment:
         universal_deltas: Mapping[str, torch.Tensor],
         scope: str,
         condition: str,
+        mode: str,
     ) -> None:
         if self.config.save_adversarial_examples <= 0:
             return
@@ -767,47 +835,104 @@ class AdversarialExperiment:
 
         root = self.output / "adversarial_examples" / condition
         manifest: Dict[str, object] = {
+            "condition": condition,
             "threshold_mode": self.config.threshold_mode,
             "threshold_quantile": self.config.threshold_quantile,
             "category_thresholds": self.category_thresholds,
+            "loss_mode": mode,
+            "map_success_min_mean_shift": self.config.map_success_min_mean_shift,
+            "map_success_min_pixel_fraction": (
+                self.config.map_success_min_pixel_fraction
+            ),
+            "map_false_positive_threshold": (
+                self.config.map_false_positive_threshold
+            ),
+            "localization_success_min_p_ap_drop": (
+                self.config.localization_success_min_p_ap_drop
+            ),
             "heatmap_normalization": "joint_min_max_per_clean_adversarial_pair",
             "categories": {},
         }
         role_limit = min(self.config.save_adversarial_examples, 5)
         for category in sorted(rows_by_category):
             rows = rows_by_category[category]
-            successful = [row for row in rows if int(row["targeted_success"]) == 1]
-            failed = [row for row in rows if int(row["targeted_success"]) == 0]
-            finite_lpips = [row for row in rows if np.isfinite(float(row["lpips"]))]
-            finite_ssim = [row for row in rows if np.isfinite(float(row["ssim"]))]
+            classification_flips = [
+                row
+                for row in rows
+                if int(row["classification_flip"]) == 1
+            ]
+            def finite_map_success(row: Mapping[str, object]) -> bool:
+                return np.isfinite(float(row["map_directional_success"]))
+
+            map_failures = [
+                row
+                for row in rows
+                if (
+                    finite_map_success(row)
+                    and int(row["map_directional_success"]) == 0
+                )
+                or (
+                    not finite_map_success(row)
+                    and (
+                        float(row["map_directional_mean_shift"]) <= 0.0
+                        or float(row["map_directional_pixel_fraction"])
+                        <= self.config.map_success_min_pixel_fraction
+                    )
+                )
+            ]
+            localization_rows = [
+                row
+                for row in rows
+                if np.isfinite(float(row["image_p_ap_drop"]))
+            ]
             rng = np.random.default_rng(
                 self.config.split_seed
                 + zlib.crc32(f"{condition}/{category}".encode("utf-8"))
             )
             selections: List[tuple[str, Mapping[str, object] | None]] = [
                 (
-                    "successful_attack",
-                    max(successful, key=lambda row: float(row["directional_score_shift"]))
-                    if successful
-                    else None,
+                    "classification_flip_example",
+                    (
+                        max(
+                            classification_flips,
+                            key=lambda row: float(row["directional_score_shift"]),
+                        )
+                        if classification_flips
+                        else None
+                    ),
                 ),
                 (
-                    "failed_attack",
-                    min(failed, key=lambda row: float(row["directional_score_shift"]))
-                    if failed
-                    else None,
+                    "strongest_map_direction_example",
+                    (
+                        max(
+                            rows,
+                            key=lambda row: float(row["map_directional_mean_shift"]),
+                        )
+                        if rows
+                        else None
+                    ),
                 ),
                 (
-                    "highest_lpips",
-                    max(finite_lpips, key=lambda row: float(row["lpips"]))
-                    if finite_lpips
-                    else None,
+                    "largest_localization_drop_example",
+                    (
+                        max(
+                            localization_rows,
+                            key=lambda row: float(row["image_p_ap_drop"]),
+                        )
+                        if localization_rows
+                        else None
+                    ),
                 ),
                 (
-                    "lowest_ssim",
-                    min(finite_ssim, key=lambda row: float(row["ssim"]))
-                    if finite_ssim
-                    else None,
+                    "map_direction_failure_example",
+                    (
+                        min(
+                            map_failures,
+                            key=lambda row: float(row["map_directional_mean_shift"]),
+                        )
+                        if map_failures
+                        else None
+                    ),
                 ),
                 (
                     "deterministic_random",
@@ -823,9 +948,11 @@ class AdversarialExperiment:
                 group_name = "all_categories" if scope == "dataset" else category
                 delta = universal_deltas[group_name]
                 clean = self.image_loader(sample)
-                attacked = TargetedPGD.apply_universal(
-                    clean.unsqueeze(0), delta
-                )[0].detach().cpu()
+                attacked = (
+                    TargetedPGD.apply_universal(clean.unsqueeze(0), delta)[0]
+                    .detach()
+                    .cpu()
+                )
                 clean_cpu = clean.detach().cpu()
                 role_dir = root / _safe_name(category) / role
                 role_dir.mkdir(parents=True, exist_ok=True)
@@ -837,9 +964,9 @@ class AdversarialExperiment:
                 difference = np.clip(
                     0.5 + 10.0 * (attacked_array - clean_array), 0.0, 1.0
                 )
-                Image.fromarray(
-                    (difference * 255.0).round().astype(np.uint8)
-                ).save(role_dir / "difference_x10.png")
+                Image.fromarray((difference * 255.0).round().astype(np.uint8)).save(
+                    role_dir / "difference_x10.png"
+                )
 
                 mask = load_mask(sample, self.config.metric_size)
                 Image.fromarray((mask * 255).astype(np.uint8)).save(
@@ -865,6 +992,10 @@ class AdversarialExperiment:
                 _signed_heatmap(adversarial_map - clean_map).save(
                     role_dir / "heatmap_difference.png"
                 )
+                map_direction = 1.0 if int(row["target_label"]) == 1 else -1.0
+                _signed_heatmap(map_direction * (adversarial_map - clean_map)).save(
+                    role_dir / "target_direction_heatmap.png"
+                )
 
                 image_size = (self.config.metric_size, self.config.metric_size)
                 clean_image = Image.fromarray(_tensor_uint8(clean_cpu)).resize(
@@ -882,9 +1013,84 @@ class AdversarialExperiment:
                 category_manifest[role] = {
                     "status": "saved",
                     "sample_id": sample.protocol_id,
-                    "targeted_success": int(row["targeted_success"]),
+                    "image_targeted_success": int(row["image_targeted_success"]),
+                    "classification_flip": int(row["classification_flip"]),
+                    "map_directional_success": (
+                        int(row["map_directional_success"])
+                        if np.isfinite(float(row["map_directional_success"]))
+                        else None
+                    ),
                     "clean_score": float(row["clean_score"]),
                     "adversarial_score": float(row["adversarial_score"]),
+                    "map_directional_mean_shift": float(
+                        row["map_directional_mean_shift"]
+                    ),
+                    "map_directional_pixel_fraction": float(
+                        row["map_directional_pixel_fraction"]
+                    ),
+                    "map_absolute_shift": float(row["map_absolute_shift"]),
+                    "map_false_positive_threshold": float(
+                        row["map_false_positive_threshold"]
+                    ),
+                    "clean_false_positive_map_area": (
+                        float(row["clean_false_positive_map_area"])
+                        if np.isfinite(float(row["clean_false_positive_map_area"]))
+                        else None
+                    ),
+                    "adversarial_false_positive_map_area": (
+                        float(row["adversarial_false_positive_map_area"])
+                        if np.isfinite(
+                            float(row["adversarial_false_positive_map_area"])
+                        )
+                        else None
+                    ),
+                    "false_positive_map_area_increase": (
+                        float(row["false_positive_map_area_increase"])
+                        if np.isfinite(float(row["false_positive_map_area_increase"]))
+                        else None
+                    ),
+                    "image_p_ap_drop": (
+                        float(row["image_p_ap_drop"])
+                        if np.isfinite(float(row["image_p_ap_drop"]))
+                        else None
+                    ),
+                    "clean_image_p_ap": (
+                        float(row["clean_image_p_ap"])
+                        if np.isfinite(float(row["clean_image_p_ap"]))
+                        else None
+                    ),
+                    "adversarial_image_p_ap": (
+                        float(row["adversarial_image_p_ap"])
+                        if np.isfinite(float(row["adversarial_image_p_ap"]))
+                        else None
+                    ),
+                    "image_aupro_drop": (
+                        float(row["image_aupro_drop"])
+                        if np.isfinite(float(row["image_aupro_drop"]))
+                        else None
+                    ),
+                    "clean_image_aupro": (
+                        float(row["clean_image_aupro"])
+                        if np.isfinite(float(row["clean_image_aupro"]))
+                        else None
+                    ),
+                    "adversarial_image_aupro": (
+                        float(row["adversarial_image_aupro"])
+                        if np.isfinite(float(row["adversarial_image_aupro"]))
+                        else None
+                    ),
+                    "localization_contrast_drop": (
+                        float(row["localization_contrast_drop"])
+                        if np.isfinite(float(row["localization_contrast_drop"]))
+                        else None
+                    ),
+                    "localization_degradation_success": (
+                        int(row["localization_degradation_success"])
+                        if np.isfinite(
+                            float(row["localization_degradation_success"])
+                        )
+                        else None
+                    ),
                     "lpips": float(row["lpips"]),
                     "ssim": float(row["ssim"]),
                 }
@@ -936,7 +1142,9 @@ class AdversarialExperiment:
                     )
                 ),
                 "universal_protocol": (
-                    self.config.universal_protocol if scope != "per_image" else "per_image"
+                    self.config.universal_protocol
+                    if scope != "per_image"
+                    else "per_image"
                 ),
                 "scope": scope,
                 "direction": direction,
@@ -962,7 +1170,9 @@ class AdversarialExperiment:
                 "evaluation_source_ids": [
                     sample.protocol_id for sample in evaluation_source_samples
                 ],
-                "evaluation_all_ids": [sample.protocol_id for sample in evaluation_samples],
+                "evaluation_all_ids": [
+                    sample.protocol_id for sample in evaluation_samples
+                ],
                 "fit_source_count": len(fit_source_samples),
                 "evaluation_source_count": len(evaluation_source_samples),
                 "evaluation_all_count": len(evaluation_samples),
@@ -987,18 +1197,43 @@ class AdversarialExperiment:
             linf, ssim, lpips_values = perceptual_metrics(
                 clean.detach(), attacked.detach(), lpips_metric
             )
+            batch_clean_maps = resize_anomaly_maps(
+                [clean_maps[sample.index] for sample in batch_samples],
+                self.config.metric_size,
+                self.config.anomaly_map_sigma,
+            )
+            batch_adversarial_maps = resize_anomaly_maps(
+                maps,
+                self.config.metric_size,
+                self.config.anomaly_map_sigma,
+            )
             for position, sample in enumerate(batch_samples):
                 adversarial_scores[sample.index] = scores[position]
                 adversarial_maps[sample.index] = maps[position]
                 decision_threshold = self.category_thresholds[sample.category]
-                clean_prediction = int(
-                    clean_scores[sample.index] >= decision_threshold
+                classification_results = per_image_classification_metrics(
+                    float(clean_scores[sample.index]),
+                    float(scores[position]),
+                    decision_threshold,
+                    source_label,
+                    target_label,
                 )
-                adversarial_prediction = int(scores[position] >= decision_threshold)
-                clean_correct = clean_prediction == source_label
-                score_shift = float(scores[position] - clean_scores[sample.index])
-                directional_score_shift = (
-                    score_shift if target_label == 1 else -score_shift
+                map_results = per_image_map_metrics(
+                    load_mask(sample, self.config.metric_size),
+                    batch_clean_maps[position],
+                    batch_adversarial_maps[position],
+                    target_label,
+                    aupro_fpr_limit=self.config.aupro_fpr_limit,
+                    map_success_min_mean_shift=(self.config.map_success_min_mean_shift),
+                    map_success_min_pixel_fraction=(
+                        self.config.map_success_min_pixel_fraction
+                    ),
+                    map_false_positive_threshold=(
+                        self.config.map_false_positive_threshold
+                    ),
+                    localization_success_min_p_ap_drop=(
+                        self.config.localization_success_min_p_ap_drop
+                    ),
                 )
                 details.append(
                     {
@@ -1024,18 +1259,17 @@ class AdversarialExperiment:
                         "decision_threshold": decision_threshold,
                         "clean_score": float(clean_scores[sample.index]),
                         "adversarial_score": float(scores[position]),
-                        "clean_prediction": clean_prediction,
-                        "adversarial_prediction": adversarial_prediction,
-                        "clean_correct_for_source": int(clean_correct),
-                        "targeted_success": int(adversarial_prediction == target_label),
-                        "score_shift": score_shift,
-                        "directional_score_shift": directional_score_shift,
-                        "directional_success": int(directional_score_shift > 0.0),
+                        **classification_results,
+                        "map_false_positive_threshold": (
+                            self.config.map_false_positive_threshold
+                        ),
+                        **map_results,
                         "linf": float(linf[position]),
                         "ssim": float(ssim[position]),
                         "lpips": float(lpips_values[position]),
                     }
                 )
+
         if scope == "per_image":
             batches = list(
                 _batches(
@@ -1056,14 +1290,19 @@ class AdversarialExperiment:
                     [sample.category for sample in batch],
                     target_label,
                     mode,
+                    spatial_masks=(
+                        torch.stack(
+                            [self.attack_mask_loader(sample) for sample in batch]
+                        )
+                        if mode in {"local", "combined"}
+                        else None
+                    ),
                 )
                 evaluate_batch(batch, clean, attacked)
         else:
             if scope == "dataset":
                 fit_groups = {"all_categories": list(fit_source_samples)}
-                evaluation_groups = {
-                    "all_categories": list(evaluation_source_samples)
-                }
+                evaluation_groups = {"all_categories": list(evaluation_source_samples)}
             elif scope == "per_category":
                 fit_groups = group_by_category(fit_source_samples)
                 evaluation_groups = group_by_category(evaluation_source_samples)
@@ -1112,6 +1351,7 @@ class AdversarialExperiment:
                         self.image_loader,
                         target_label,
                         mode,
+                        mask_loader=self.attack_mask_loader,
                         diagnostic_samples=self._diagnostic_subset(group_fit_samples),
                         progress=report,
                     )
@@ -1209,6 +1449,10 @@ class AdversarialExperiment:
                     "target_label": target_label,
                     "global_weight": self.config.attack.global_weight,
                     "local_weight": self.config.attack.local_weight,
+                    "mask_local_loss": self.config.attack.mask_local_loss,
+                    "local_background_weight": (
+                        self.config.attack.local_background_weight
+                    ),
                     "groups": optimization_groups,
                 },
             )
@@ -1230,6 +1474,7 @@ class AdversarialExperiment:
                 universal_deltas,
                 scope,
                 condition,
+                mode,
             )
         return adversarial_scores, adversarial_maps, details
 
@@ -1259,13 +1504,51 @@ class AdversarialExperiment:
             )
             clean = clean_metrics[category]
             category_details = [row for row in details if row["category"] == category]
-            eligible = [row for row in category_details if int(row["clean_correct_for_source"]) == 1]
+            eligible = [
+                row
+                for row in category_details
+                if int(row["clean_correct_for_source"]) == 1
+            ]
             eligible_success = [
-                row for row in eligible if int(row["targeted_success"]) == 1
+                row for row in eligible if int(row["classification_flip"]) == 1
             ]
             all_success = [
-                row for row in category_details if int(row["targeted_success"]) == 1
+                row
+                for row in category_details
+                if int(row["image_targeted_success"]) == 1
             ]
+            map_success_details = [
+                row
+                for row in category_details
+                if np.isfinite(float(row["map_directional_success"]))
+            ]
+            map_success = [
+                row
+                for row in map_success_details
+                if int(row["map_directional_success"]) == 1
+            ]
+            localization_details = [
+                row
+                for row in category_details
+                if np.isfinite(float(row["image_p_ap_drop"]))
+            ]
+            localization_success = [
+                row
+                for row in localization_details
+                if int(row["localization_degradation_success"]) == 1
+            ]
+
+            def detail_mean(field: str) -> float:
+                values = np.asarray(
+                    [float(item[field]) for item in category_details],
+                    dtype=np.float64,
+                )
+                return (
+                    float(np.nanmean(values))
+                    if np.isfinite(values).any()
+                    else float("nan")
+                )
+
             linf = np.asarray([float(row["linf"]) for row in category_details])
             ssim = np.asarray([float(row["ssim"]) for row in category_details])
             lpips = np.asarray([float(row["lpips"]) for row in category_details])
@@ -1286,11 +1569,50 @@ class AdversarialExperiment:
                 "source_count": len(category_details),
                 "eligible_clean_correct_count": len(eligible),
                 "classification_flip_rate": (
-                    100.0 * len(eligible_success) / len(eligible) if eligible else float("nan")
+                    100.0 * len(eligible_success) / len(eligible)
+                    if eligible
+                    else float("nan")
                 ),
-                "targeted_success_rate_all": (
+                "image_targeted_success_rate_all": (
                     100.0 * len(all_success) / len(category_details)
-                    if category_details else float("nan")
+                    if category_details
+                    else float("nan")
+                ),
+                "map_directional_success_rate": (
+                    100.0 * len(map_success) / len(map_success_details)
+                    if map_success_details
+                    else float("nan")
+                ),
+                "mean_map_directional_shift": detail_mean("map_directional_mean_shift"),
+                "mean_map_directional_pixel_fraction": detail_mean(
+                    "map_directional_pixel_fraction"
+                ),
+                "mean_map_absolute_shift": detail_mean("map_absolute_shift"),
+                "mean_defect_directional_shift": detail_mean(
+                    "defect_directional_mean_shift"
+                ),
+                "mean_background_directional_shift": detail_mean(
+                    "background_directional_mean_shift"
+                ),
+                "mean_clean_false_positive_map_area": detail_mean(
+                    "clean_false_positive_map_area"
+                ),
+                "mean_adversarial_false_positive_map_area": detail_mean(
+                    "adversarial_false_positive_map_area"
+                ),
+                "mean_false_positive_map_area_increase": detail_mean(
+                    "false_positive_map_area_increase"
+                ),
+                "mean_image_p_auroc_drop": detail_mean("image_p_auroc_drop"),
+                "mean_image_p_ap_drop": detail_mean("image_p_ap_drop"),
+                "mean_image_aupro_drop": detail_mean("image_aupro_drop"),
+                "mean_localization_contrast_drop": detail_mean(
+                    "localization_contrast_drop"
+                ),
+                "localization_degradation_success_rate": (
+                    100.0 * len(localization_success) / len(localization_details)
+                    if localization_details
+                    else float("nan")
                 ),
                 "clean_i_auroc": clean["i_auroc"],
                 "adversarial_i_auroc": attacked_metrics["i_auroc"],
@@ -1308,7 +1630,11 @@ class AdversarialExperiment:
                 "max_linf": float(np.max(linf)) if linf.size else float("nan"),
                 "epsilon": self.config.attack.epsilon,
                 "mean_ssim": float(np.mean(ssim)) if ssim.size else float("nan"),
-                "mean_lpips": float(np.nanmean(lpips)) if np.isfinite(lpips).any() else float("nan"),
+                "mean_lpips": (
+                    float(np.nanmean(lpips))
+                    if np.isfinite(lpips).any()
+                    else float("nan")
+                ),
             }
             rows.append(row)
 
@@ -1332,12 +1658,20 @@ class AdversarialExperiment:
         }
         for field in SUMMARY_FIELDS:
             if field in macro or field in {
-                "condition", "target_model", "scope", "universal_protocol",
-                "direction", "loss_mode", "dataset", "category"
+                "condition",
+                "target_model",
+                "scope",
+                "universal_protocol",
+                "direction",
+                "loss_mode",
+                "dataset",
+                "category",
             }:
                 continue
             values = np.asarray([float(row[field]) for row in rows], dtype=np.float64)
-            macro[field] = float(np.nanmean(values)) if np.isfinite(values).any() else float("nan")
+            macro[field] = (
+                float(np.nanmean(values)) if np.isfinite(values).any() else float("nan")
+            )
         rows.append(macro)
         return rows
 
@@ -1462,9 +1796,7 @@ class AdversarialExperiment:
         )
         self._load_target()
         try:
-            self._prepare_category_thresholds(
-                train_good_samples, list(grouped)
-            )
+            self._prepare_category_thresholds(train_good_samples, list(grouped))
             prompt_categories = sorted(
                 set(grouped)
                 | {sample.category for sample in source_test_samples}
@@ -1536,16 +1868,18 @@ class AdversarialExperiment:
                     clean_maps,
                     cache_key=clean_cache_key,
                 )
-                adversarial_scores, adversarial_maps, details = self._attack_and_predict(
-                    fit_sources,
-                    evaluation_sources,
-                    evaluation_samples,
-                    clean_scores,
-                    clean_maps,
-                    scope,
-                    direction,
-                    mode,
-                    lpips_metric,
+                adversarial_scores, adversarial_maps, details = (
+                    self._attack_and_predict(
+                        fit_sources,
+                        evaluation_sources,
+                        evaluation_samples,
+                        clean_scores,
+                        clean_maps,
+                        scope,
+                        direction,
+                        mode,
+                        lpips_metric,
+                    )
                 )
                 summaries = self._summaries(
                     evaluation_grouped,
@@ -1590,7 +1924,9 @@ class AdversarialExperiment:
                     adversarial_lowres_maps=adversarial_maps[evaluation_indices],
                 )
                 self.summary_rows = [
-                    row for row in self.summary_rows if row.get("condition") != condition
+                    row
+                    for row in self.summary_rows
+                    if row.get("condition") != condition
                 ] + summaries
                 self.detail_rows = [
                     row for row in self.detail_rows if row.get("condition") != condition
