@@ -1,4 +1,8 @@
-splits/*.csv text eol=lf
-splits/*.json text eol=lf
-thresholds/**/*.json text eol=lf
-thresholds/**/*.npz binary
+old_pipeline/splits/*.csv text eol=lf
+old_pipeline/splits/*.json text eol=lf
+old_pipeline/thresholds/**/*.json text eol=lf
+old_pipeline/thresholds/**/*.npz binary
+new_pipeline/**/*.py text eol=lf
+new_pipeline/**/*.json text eol=lf
+new_pipeline/**/*.csv text eol=lf
+new_pipeline/*.ipynb text eol=lf
