@@ -15,6 +15,51 @@ from .adapters import build_adapter
 from .datasets import EvaluationSample, discover_calibration_dataset, load_image
 
 
+def _normalized_model_name(value: str) -> str:
+    return "".join(character for character in value.lower() if character.isalnum())
+
+
+def load_category_thresholds(
+    path: str | Path,
+    *,
+    expected_dataset: str | None = None,
+    expected_model: str | None = None,
+) -> dict[str, float]:
+    """Load and validate a frozen per-category image-score threshold artifact."""
+
+    threshold_path = Path(path).expanduser().resolve()
+    if not threshold_path.is_file():
+        raise FileNotFoundError(f"Threshold artifact not found: {threshold_path}")
+    payload = json.loads(threshold_path.read_text(encoding="utf-8"))
+    dataset = str(payload.get("dataset", ""))
+    model = str(payload.get("target_model", ""))
+    if expected_dataset is not None and dataset != expected_dataset:
+        raise ValueError(
+            f"Threshold dataset mismatch: expected {expected_dataset!r}, got {dataset!r}"
+        )
+    if (
+        expected_model is not None
+        and _normalized_model_name(model) != _normalized_model_name(expected_model)
+    ):
+        raise ValueError(
+            f"Threshold model mismatch: expected {expected_model!r}, got {model!r}"
+        )
+    if payload.get("threshold_mode") != "normal_train_quantile":
+        raise ValueError("Only frozen normal-training quantile thresholds are supported")
+    records = payload.get("categories")
+    if not isinstance(records, dict) or not records:
+        raise ValueError("Threshold artifact must contain non-empty category records")
+    thresholds: dict[str, float] = {}
+    for category, record in records.items():
+        if not isinstance(record, dict) or "threshold" not in record:
+            raise ValueError(f"Invalid threshold record for category {category!r}")
+        threshold = float(record["threshold"])
+        if not np.isfinite(threshold):
+            raise ValueError(f"Non-finite threshold for category {category!r}")
+        thresholds[str(category)] = threshold
+    return thresholds
+
+
 @dataclass
 class ThresholdCalibrationConfig:
     output_root: str

@@ -22,7 +22,15 @@ from .datasets import (
     load_image,
     load_mask,
 )
-from .metrics import image_metrics, pixel_metrics, resize_anomaly_maps
+from .metrics import (
+    binary_classification_metrics,
+    image_metrics,
+    pixel_metrics,
+    resize_anomaly_maps,
+    targeted_attack_metrics,
+)
+from .qualitative import export_representative_samples
+from .thresholds import load_category_thresholds
 
 
 @dataclass
@@ -31,6 +39,7 @@ class EvaluationConfig:
     output_root: str
     model_name: str
     model_kwargs_by_target: dict[str, dict[str, Any]]
+    thresholds_by_target: dict[str, str] = field(default_factory=dict)
     mvtec_root: str | None = None
     visa_root: str | None = None
     device: str = "cuda"
@@ -41,6 +50,8 @@ class EvaluationConfig:
     aupro_max_thresholds: int = 200
     verify_checksums: bool = True
     save_predictions: bool = True
+    save_qualitative_samples: bool = False
+    qualitative_output_root: str | None = None
     source_datasets: tuple[str, ...] | None = None
     target_datasets: tuple[str, ...] | None = None
     condition_names: tuple[str, ...] | None = None
@@ -56,6 +67,14 @@ class EvaluationConfig:
             raise ValueError("aupro_fpr_limit must be in (0, 1]")
         if self.max_conditions is not None and self.max_conditions < 1:
             raise ValueError("max_conditions must be positive when supplied")
+        if self.save_qualitative_samples and not self.qualitative_output_root:
+            raise ValueError(
+                "qualitative_output_root is required when saving qualitative samples"
+            )
+        if self.save_qualitative_samples and not self.thresholds_by_target:
+            raise ValueError(
+                "Frozen thresholds are required to select qualitative successes/failures"
+            )
 
 
 Prediction = tuple[float, np.ndarray]
@@ -165,6 +184,7 @@ def _metric_row(
     adversarial_predictions: dict[str, Prediction],
     actual_linf: dict[str, float],
     config: EvaluationConfig,
+    category_thresholds: dict[str, float] | None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     labels = np.asarray([sample.label for sample in samples], dtype=np.uint8)
     clean_scores = np.asarray(
@@ -205,35 +225,96 @@ def _metric_row(
         ),
     }
     attacked_ids = set(artifact.attacked_ids)
+    attacked_mask = np.asarray(
+        [sample.protocol_id in attacked_ids for sample in samples], dtype=bool
+    )
     target_label = int(artifact.record["target_label"])
     direction_sign = 1.0 if target_label == 1 else -1.0
+    threshold: float | None = None
+    clean_binary: np.ndarray | None = None
+    adversarial_binary: np.ndarray | None = None
+    threshold_metrics: dict[str, float | int] = {}
+    if category_thresholds is not None:
+        if category not in category_thresholds:
+            raise ValueError(f"No frozen threshold found for category {category!r}")
+        threshold = category_thresholds[category]
+        clean_binary = (clean_scores >= threshold).astype(np.uint8)
+        adversarial_binary = (adversarial_scores >= threshold).astype(np.uint8)
+        clean_classification = binary_classification_metrics(labels, clean_binary)
+        adversarial_classification = binary_classification_metrics(
+            labels, adversarial_binary
+        )
+        threshold_metrics = {
+            "clean_accuracy": clean_classification["accuracy"],
+            "adversarial_accuracy": adversarial_classification["accuracy"],
+            "clean_fpr": clean_classification["fpr"],
+            "adversarial_fpr": adversarial_classification["fpr"],
+            "clean_fnr": clean_classification["fnr"],
+            "adversarial_fnr": adversarial_classification["fnr"],
+            **targeted_attack_metrics(
+                clean_binary,
+                adversarial_binary,
+                attacked_mask,
+                source_label=int(artifact.record["source_label"]),
+                target_label=int(artifact.record["target_label"]),
+            ),
+        }
     per_image: list[dict[str, Any]] = []
     for index, sample in enumerate(samples):
         attacked = sample.protocol_id in attacked_ids
         map_delta = direction_sign * (adversarial_maps[index] - clean_maps[index])
         score_shift = float(adversarial_scores[index] - clean_scores[index])
-        per_image.append(
-            {
-                "model": config.model_name,
-                "condition": artifact.name,
-                "source_dataset": artifact.record["source_dataset"],
-                "target_dataset": artifact.record["target_dataset"],
-                "direction": artifact.record["direction"],
-                "loss_mode": artifact.record["loss_mode"],
-                "scope": artifact.record["scope"],
-                "sample_id": sample.protocol_id,
-                "category": sample.category,
-                "label": sample.label,
-                "attacked": int(attacked),
-                "clean_score": float(clean_scores[index]),
-                "adversarial_score": float(adversarial_scores[index]),
-                "score_shift": score_shift,
-                "directional_score_shift": direction_sign * score_shift,
-                "map_directional_mean_shift": float(map_delta.mean()),
-                "map_directional_pixel_fraction": float((map_delta > 0).mean()),
-                "actual_linf": actual_linf.get(sample.protocol_id, 0.0),
-            }
-        )
+        detail: dict[str, Any] = {
+            "model": config.model_name,
+            "condition": artifact.name,
+            "source_dataset": artifact.record["source_dataset"],
+            "target_dataset": artifact.record["target_dataset"],
+            "direction": artifact.record["direction"],
+            "loss_mode": artifact.record["loss_mode"],
+            "scope": artifact.record["scope"],
+            "sample_id": sample.protocol_id,
+            "category": sample.category,
+            "label": sample.label,
+            "attacked": int(attacked),
+            "clean_score": float(clean_scores[index]),
+            "adversarial_score": float(adversarial_scores[index]),
+            "score_shift": score_shift,
+            "directional_score_shift": direction_sign * score_shift,
+            "map_directional_mean_shift": float(map_delta.mean()),
+            "map_directional_pixel_fraction": float((map_delta > 0).mean()),
+            "actual_linf": actual_linf.get(sample.protocol_id, 0.0),
+        }
+        if (
+            threshold is not None
+            and clean_binary is not None
+            and adversarial_binary is not None
+        ):
+            clean_prediction = int(clean_binary[index])
+            adversarial_prediction = int(adversarial_binary[index])
+            eligible = attacked and clean_prediction == int(
+                artifact.record["source_label"]
+            )
+            detail.update(
+                {
+                    "threshold": threshold,
+                    "clean_binary_prediction": clean_prediction,
+                    "adversarial_binary_prediction": adversarial_prediction,
+                    "attack_flipped": int(
+                        attacked and clean_prediction != adversarial_prediction
+                    ),
+                    "targeted_success_eligible": int(eligible),
+                    "targeted_attack_success": int(
+                        eligible
+                        and adversarial_prediction == target_label
+                        and adversarial_prediction != clean_prediction
+                    ),
+                    "clean_target_margin": direction_sign
+                    * (float(clean_scores[index]) - threshold),
+                    "adversarial_target_margin": direction_sign
+                    * (float(adversarial_scores[index]) - threshold),
+                }
+            )
+        per_image.append(detail)
     attacked_rows = [row for row in per_image if row["attacked"]]
 
     def attacked_mean(field: str) -> float:
@@ -260,7 +341,10 @@ def _metric_row(
             "map_directional_pixel_fraction"
         ),
         "mean_actual_linf": attacked_mean("actual_linf"),
+        **threshold_metrics,
     }
+    if threshold is not None:
+        row["threshold"] = threshold
     for metric in ("i_auroc", "i_ap", "p_auroc", "aupro"):
         row[f"clean_{metric}"] = clean[metric]
         row[f"adversarial_{metric}"] = adversarial[metric]
@@ -296,6 +380,23 @@ def _macro_row(artifact: AttackArtifact, rows: list[dict[str, Any]], model: str)
         for metric in ("i_auroc", "i_ap", "p_auroc", "aupro")
         for prefix in ("clean", "adversarial", "delta")
     ]
+    threshold_mean_fields = [
+        "clean_accuracy",
+        "adversarial_accuracy",
+        "clean_fpr",
+        "adversarial_fpr",
+        "clean_fnr",
+        "adversarial_fnr",
+        "attack_flip_rate",
+        "targeted_attack_success_rate",
+    ]
+    if rows and all(
+        all(field in row for field in threshold_mean_fields) for row in rows
+    ):
+        mean_fields.extend(threshold_mean_fields)
+        base["targeted_success_eligible_count"] = sum(
+            int(row["targeted_success_eligible_count"]) for row in rows
+        )
     for field_name in mean_fields:
         base[field_name] = _finite_mean(row[field_name] for row in rows)
     return base
@@ -322,27 +423,42 @@ def _save_predictions(
     clean: dict[str, Prediction],
     adversarial: dict[str, Prediction],
     attacked_ids: set[str],
+    category_thresholds: dict[str, float] | None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        path,
-        sample_ids=np.asarray([sample.protocol_id for sample in samples]),
-        labels=np.asarray([sample.label for sample in samples], dtype=np.uint8),
-        attacked=np.asarray(
+    payload: dict[str, np.ndarray] = {
+        "sample_ids": np.asarray([sample.protocol_id for sample in samples]),
+        "labels": np.asarray([sample.label for sample in samples], dtype=np.uint8),
+        "attacked": np.asarray(
             [sample.protocol_id in attacked_ids for sample in samples], dtype=bool
         ),
-        clean_scores=np.asarray(
+        "clean_scores": np.asarray(
             [clean[sample.protocol_id][0] for sample in samples], dtype=np.float32
         ),
-        adversarial_scores=np.asarray(
+        "adversarial_scores": np.asarray(
             [adversarial[sample.protocol_id][0] for sample in samples],
             dtype=np.float32,
         ),
-        clean_lowres_maps=np.stack([clean[sample.protocol_id][1] for sample in samples]),
-        adversarial_lowres_maps=np.stack(
+        "clean_lowres_maps": np.stack(
+            [clean[sample.protocol_id][1] for sample in samples]
+        ),
+        "adversarial_lowres_maps": np.stack(
             [adversarial[sample.protocol_id][1] for sample in samples]
         ),
-    )
+    }
+    if category_thresholds is not None:
+        thresholds = np.asarray(
+            [category_thresholds[sample.category] for sample in samples],
+            dtype=np.float32,
+        )
+        payload["thresholds"] = thresholds
+        payload["clean_binary_predictions"] = (
+            payload["clean_scores"] >= thresholds
+        ).astype(np.uint8)
+        payload["adversarial_binary_predictions"] = (
+            payload["adversarial_scores"] >= thresholds
+        ).astype(np.uint8)
+    np.savez_compressed(path, **payload)
 
 
 def _safe_config_dict(config: EvaluationConfig) -> dict[str, Any]:
@@ -399,6 +515,18 @@ def run_evaluation(config: EvaluationConfig) -> Path:
 
     for (target_dataset, image_size), target_artifacts in groups.items():
         print(f"[data] Discovering {target_dataset}")
+        category_thresholds: dict[str, float] | None = None
+        if config.thresholds_by_target:
+            threshold_path = config.thresholds_by_target.get(target_dataset)
+            if threshold_path is None:
+                raise ValueError(
+                    f"No threshold artifact configured for target {target_dataset!r}"
+                )
+            category_thresholds = load_category_thresholds(
+                threshold_path,
+                expected_dataset=target_dataset,
+                expected_model=config.model_name,
+            )
         sample_index = index_samples(
             discover_dataset(
                 target_dataset,
@@ -465,6 +593,7 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                         adversarial_predictions,
                         actual_linf,
                         config,
+                        category_thresholds,
                     )
                     condition_category_rows.append(row)
                     condition_per_image.extend(details)
@@ -475,6 +604,19 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                 summary_rows.append(macro)
                 per_image_rows.extend(condition_per_image)
 
+                if config.save_qualitative_samples:
+                    export_representative_samples(
+                        config.qualitative_output_root,
+                        artifact.name,
+                        condition_per_image,
+                        {sample.protocol_id: sample for sample in evaluation},
+                        clean_predictions,
+                        adversarial_predictions,
+                        delta,
+                        image_size=image_size,
+                        anomaly_map_sigma=config.anomaly_map_sigma,
+                    )
+
                 if config.save_predictions:
                     _save_predictions(
                         output / "predictions" / f"{artifact.name}.npz",
@@ -482,6 +624,7 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                         clean_predictions,
                         adversarial_predictions,
                         attacked_set,
+                        category_thresholds,
                     )
                 # Persist after every condition so long Kaggle runs retain progress.
                 _write_csv(output / "category_metrics.csv", category_rows)

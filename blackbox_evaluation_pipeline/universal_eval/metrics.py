@@ -51,6 +51,87 @@ def image_metrics(labels: Sequence[int], scores: Sequence[float]) -> dict[str, f
     }
 
 
+def binary_classification_metrics(
+    labels: Sequence[int], predictions: Sequence[int]
+) -> dict[str, float]:
+    """Return image classification metrics on a 0--100 scale."""
+
+    labels_array = np.asarray(labels, dtype=np.uint8)
+    predictions_array = np.asarray(predictions, dtype=np.uint8)
+    if labels_array.ndim != 1 or labels_array.shape != predictions_array.shape:
+        raise ValueError("Labels and predictions must be matching one-dimensional arrays")
+    if labels_array.size == 0:
+        raise ValueError("Classification inputs must be non-empty")
+    if not np.isin(labels_array, (0, 1)).all() or not np.isin(
+        predictions_array, (0, 1)
+    ).all():
+        raise ValueError("Labels and predictions must be binary")
+    normal = labels_array == 0
+    abnormal = labels_array == 1
+    return {
+        "accuracy": 100.0 * float(np.mean(predictions_array == labels_array)),
+        "fpr": (
+            100.0 * float(np.mean(predictions_array[normal] == 1))
+            if normal.any()
+            else float("nan")
+        ),
+        "fnr": (
+            100.0 * float(np.mean(predictions_array[abnormal] == 0))
+            if abnormal.any()
+            else float("nan")
+        ),
+    }
+
+
+def targeted_attack_metrics(
+    clean_predictions: Sequence[int],
+    adversarial_predictions: Sequence[int],
+    attacked: Sequence[bool],
+    *,
+    source_label: int,
+    target_label: int,
+) -> dict[str, float | int]:
+    """Measure flips and targeted success on the actually attacked cohort.
+
+    Targeted success uses only samples predicted as the source class when clean;
+    this prevents an already-misclassified clean image from counting as a success.
+    """
+
+    clean = np.asarray(clean_predictions, dtype=np.uint8)
+    adversarial = np.asarray(adversarial_predictions, dtype=np.uint8)
+    attacked_array = np.asarray(attacked, dtype=bool)
+    if source_label not in (0, 1) or target_label not in (0, 1):
+        raise ValueError("Source and target labels must be binary")
+    if source_label == target_label:
+        raise ValueError("A targeted binary attack must change to the opposite class")
+    if (
+        clean.ndim != 1
+        or clean.shape != adversarial.shape
+        or clean.shape != attacked_array.shape
+    ):
+        raise ValueError(
+            "Prediction and attacked arrays must be matching and one-dimensional"
+        )
+    attacked_count = int(attacked_array.sum())
+    eligible = attacked_array & (clean == source_label)
+    successful = eligible & (adversarial == target_label) & (adversarial != clean)
+    eligible_count = int(eligible.sum())
+    return {
+        "attack_flip_rate": (
+            100.0
+            * float(np.mean(clean[attacked_array] != adversarial[attacked_array]))
+            if attacked_count
+            else float("nan")
+        ),
+        "targeted_attack_success_rate": (
+            100.0 * float(np.mean(successful[eligible]))
+            if eligible_count
+            else float("nan")
+        ),
+        "targeted_success_eligible_count": eligible_count,
+    }
+
+
 def resize_anomaly_maps(lowres_maps: Sequence[np.ndarray], size: int, sigma: float) -> np.ndarray:
     tensor = torch.as_tensor(np.stack(lowres_maps), dtype=torch.float32)[:, None]
     resized = F.interpolate(tensor, size=(size, size), mode="bilinear", align_corners=False)[:, 0].numpy()
@@ -125,4 +206,3 @@ def pixel_metrics(
             masks, maps, fpr_limit=fpr_limit, max_thresholds=max_thresholds
         ),
     }
-

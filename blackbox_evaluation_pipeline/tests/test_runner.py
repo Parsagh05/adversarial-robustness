@@ -81,19 +81,36 @@ class EndToEndRunnerTests(unittest.TestCase):
             (artifacts / "all_canonical_attack_artifacts.json").write_text(
                 json.dumps([record]), encoding="utf-8"
             )
+            threshold_path = root / "thresholds" / "category_thresholds.json"
+            threshold_path.parent.mkdir(parents=True)
+            threshold_path.write_text(
+                json.dumps(
+                    {
+                        "target_model": "unit-test-adapter",
+                        "dataset": "mvtec",
+                        "threshold_mode": "normal_train_quantile",
+                        "categories": {"toy": {"threshold": 0.01}},
+                    }
+                ),
+                encoding="utf-8",
+            )
             output = root / "output"
+            qualitative_output = root / "qualitative"
             summary = run_evaluation(
                 EvaluationConfig(
                     artifacts_root=str(artifacts),
                     output_root=str(output),
                     model_name="unit_test_adapter",
                     model_kwargs_by_target={"mvtec": {"unused": True}},
+                    thresholds_by_target={"mvtec": str(threshold_path)},
                     mvtec_root=str(dataset),
                     device="cpu",
                     batch_size=1,
                     metric_size=4,
                     anomaly_map_sigma=0,
                     aupro_max_thresholds=10,
+                    save_qualitative_samples=True,
+                    qualitative_output_root=str(qualitative_output),
                 )
             )
             self.assertTrue(summary.is_file())
@@ -102,13 +119,53 @@ class EndToEndRunnerTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["sample_count"], "2")
             self.assertEqual(rows[0]["attacked_count"], "1")
+            self.assertEqual(float(rows[0]["clean_accuracy"]), 100.0)
+            self.assertEqual(float(rows[0]["adversarial_accuracy"]), 50.0)
+            self.assertEqual(float(rows[0]["attack_flip_rate"]), 100.0)
+            self.assertEqual(float(rows[0]["targeted_attack_success_rate"]), 100.0)
             with (output / "per_image.csv").open(newline="", encoding="utf-8") as handle:
                 per_image = {row["sample_id"]: row for row in csv.DictReader(handle)}
             self.assertEqual(per_image["test/toy/good/000"]["attacked"], "1")
             self.assertEqual(per_image["test/toy/crack/001"]["attacked"], "0")
+            self.assertEqual(
+                per_image["test/toy/good/000"]["clean_binary_prediction"], "0"
+            )
+            self.assertEqual(
+                per_image["test/toy/good/000"]["adversarial_binary_prediction"],
+                "1",
+            )
+            self.assertEqual(per_image["test/toy/good/000"]["attack_flipped"], "1")
             self.assertGreater(
                 float(per_image["test/toy/good/000"]["directional_score_shift"]),
                 0.0,
+            )
+            prediction_path = output / "predictions" / (
+                "visa__mvtec__normal_to_abnormal__global__dataset.npz"
+            )
+            with np.load(prediction_path, allow_pickle=False) as predictions:
+                self.assertEqual(
+                    predictions["clean_binary_predictions"].tolist(), [0, 1]
+                )
+                self.assertEqual(
+                    predictions["adversarial_binary_predictions"].tolist(), [1, 1]
+                )
+            sample_folder = qualitative_output / (
+                "visa__mvtec__normal_to_abnormal__global__dataset"
+            ) / "strongest_success__test__toy__good__000"
+            self.assertEqual(
+                {path.name for path in sample_folder.iterdir()},
+                {
+                    "clean.png",
+                    "adversarial.png",
+                    "difference_x10.png",
+                    "clean_heatmap.png",
+                    "adversarial_heatmap.png",
+                    "clean_overlay.png",
+                    "adversarial_overlay.png",
+                    "ground_truth_mask.png",
+                    "heatmap_difference.png",
+                    "metrics.json",
+                },
             )
 
 

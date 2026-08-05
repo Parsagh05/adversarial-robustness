@@ -98,17 +98,58 @@ AnomalyCLIP result. Freeze the generated values and use the identical threshold
 for clean and adversarial scores. Recalibrate if the model checkpoint,
 preprocessing, image size, or anomaly-score implementation changes.
 
+The committed q95 artifacts under `attack_generation_pipeline/thresholds/`
+have been checked against their saved normal-training scores. The AnomalyCLIP
+evaluation notebook loads the frozen `mvtec` or `visa` artifact according to
+the target dataset; it never recalibrates during evaluation.
+
 ## Outputs
 
 Each model run produces:
 
 - `summary.csv`: macro-average results, one row per attack condition;
 - `category_metrics.csv`: per-category results;
-- `per_image.csv`: exact IDs, attacked flags, scores, directional shifts, and
-  realized L-infinity distances;
+- `per_image.csv`: exact IDs, attacked flags, scores, clean/adversarial binary
+  predictions, flip/success flags, directional shifts, and realized L-infinity
+  distances;
 - `predictions/*.npz`: auditable clean/adversarial scores and low-resolution
   maps;
 - `run_config.json` and `manifest_snapshot.json`: reproducibility metadata.
+
+The AnomalyCLIP notebook also creates a separate qualitative-samples archive;
+it is not placed inside the numerical-results ZIP. For each attack condition,
+eligible attacked images are ranked by their adversarial target margin:
+
+- `strongest_success`: successful sample farthest inside the target class;
+- `median_success`: middle successful sample after sorting by target margin;
+- `worst_failure`: eligible failure farthest from reaching the target class.
+
+An image is eligible only when its clean prediction is the intended source
+class. This avoids selecting a pre-existing clean error as an attack success.
+Selections that do not exist for a condition are listed in
+`selection_manifest.json` rather than being fabricated.
+
+Each selected folder contains:
+
+```text
+sample_id/
+├── clean.png
+├── adversarial.png
+├── difference_x10.png
+├── clean_heatmap.png
+├── adversarial_heatmap.png
+├── clean_overlay.png
+├── adversarial_overlay.png
+├── ground_truth_mask.png
+├── heatmap_difference.png
+└── metrics.json
+```
+
+The two heatmaps use a shared scale within the sample, making their colors
+directly comparable. `heatmap_difference.png` uses red for increased anomaly
+response and blue for decreased response. `metrics.json` includes identifiers,
+scores, thresholds, binary decisions, target margins, flip/success flags,
+perturbation norms, PSNR, SSIM, and heatmap-change statistics.
 
 Continuous performance metrics are reported on a `0–100` scale:
 
@@ -120,9 +161,25 @@ Continuous performance metrics are reported on a `0–100` scale:
 For each metric, `delta = clean - adversarial`, so a positive delta means the
 attack degraded the detector. The evaluator also reports directional image
 score shift, directional anomaly-map shift, directional map-pixel fraction,
-and realized L-infinity. Threshold-dependent classification flips are not
-reported because the canonical archive does not provide a fair, frozen
-model-specific calibration artifact.
+and realized L-infinity.
+
+When `thresholds_by_target` is configured, threshold-based metrics are reported
+on a `0–100` scale using `anomaly = score >= category threshold`:
+
+- clean and adversarial classification accuracy;
+- clean and adversarial false-positive rate (normal images predicted abnormal);
+- clean and adversarial false-negative rate (abnormal images predicted normal);
+- attack flip rate among images that actually receive the perturbation;
+- targeted attack success rate among attacked images whose clean prediction is
+  the attack's source class and whose adversarial prediction flips to the
+  opposite target class.
+
+Restricting targeted success to that eligible clean-source subset prevents an
+image already predicted as the target class before the attack from counting as
+a success. Reaching the target without a clean-to-adversarial classification
+change cannot count as success. `targeted_success_eligible_count` is stored next
+to the rate.
+Category metrics are computed directly; `summary.csv` reports macro-averages.
 
 ## Adding another model
 
@@ -158,7 +215,9 @@ python -m blackbox_evaluation_pipeline.evaluate --config /path/to/config.json
 
 The JSON keys are the fields of `EvaluationConfig` in
 `universal_eval/runner.py`, including `model_kwargs_by_target` for target-
-dataset-specific checkpoints.
+dataset-specific checkpoints and `thresholds_by_target` for frozen per-target
+threshold JSON files. If thresholds are omitted, continuous metrics still run
+and threshold-dependent columns are omitted.
 
 For local validation:
 
