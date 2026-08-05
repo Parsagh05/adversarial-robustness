@@ -106,14 +106,25 @@ def _predict_scores(
     description: str,
 ) -> np.ndarray:
     scores: list[float] = []
+    map_mins: list[float] = []
+    map_maxs: list[float] = []
     batches = list(_chunks(samples, batch_size))
     for batch in tqdm(batches, desc=description, leave=False):
         images = torch.stack([load_image(sample, image_size) for sample in batch])
-        batch_scores, _ = adapter.predict(images)
-        if len(batch_scores) != len(batch):
+        batch_scores, batch_maps = adapter.predict_with_categories(
+            images, [sample.category for sample in batch]
+        )
+        if len(batch_scores) != len(batch) or len(batch_maps) != len(batch):
             raise RuntimeError("Model adapter returned a different batch length")
         scores.extend(float(score) for score in batch_scores)
-    result = np.asarray(scores, dtype=np.float32)
+        map_mins.extend(float(np.asarray(anomaly_map).min()) for anomaly_map in batch_maps)
+        map_maxs.extend(float(np.asarray(anomaly_map).max()) for anomaly_map in batch_maps)
+    result = adapter.postprocess_image_scores(
+        np.asarray(scores, dtype=np.float32),
+        np.asarray(map_mins, dtype=np.float32),
+        np.asarray(map_maxs, dtype=np.float32),
+        [sample.category for sample in samples],
+    )
     if result.shape != (len(samples),) or not np.isfinite(result).all():
         raise ValueError("Calibration scores must be finite and one per sample")
     return result

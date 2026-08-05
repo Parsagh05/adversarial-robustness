@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from collections.abc import Sequence
 from typing import TypeVar
 
 import numpy as np
@@ -18,6 +19,27 @@ class ModelAdapter(ABC):
     @abstractmethod
     def predict(self, images_01: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
         """Return one anomaly score and one low-resolution map per image."""
+
+    def predict_with_categories(
+        self, images_01: torch.Tensor, categories: Sequence[str]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Predict a batch with category context when a model needs class prompts."""
+
+        if len(categories) != len(images_01):
+            raise ValueError("Categories must contain one entry per image")
+        return self.predict(images_01)
+
+    def postprocess_image_scores(
+        self,
+        scores: np.ndarray,
+        map_mins: np.ndarray,
+        map_maxs: np.ndarray,
+        categories: Sequence[str],
+    ) -> np.ndarray:
+        """Apply optional split/category-level image-score aggregation."""
+
+        del map_mins, map_maxs, categories
+        return scores
 
     @abstractmethod
     def release(self) -> None:
@@ -53,4 +75,3 @@ def build_adapter(name: str, **kwargs: object) -> ModelAdapter:
             f"Unknown model adapter {name!r}; available adapters: {available_adapters()}"
         )
     return _REGISTRY[normalized](**kwargs)
-

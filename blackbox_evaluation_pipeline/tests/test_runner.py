@@ -33,6 +33,13 @@ class UnitTestAdapter(ModelAdapter):
         maps = images_01.mean(dim=1).numpy().astype(np.float32)
         return scores, maps
 
+    def predict_with_categories(
+        self, images_01: torch.Tensor, categories: list[str]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if categories != ["toy"] * len(images_01):
+            raise AssertionError(f"Unexpected categories: {categories}")
+        return self.predict(images_01)
+
     def release(self) -> None:
         pass
 

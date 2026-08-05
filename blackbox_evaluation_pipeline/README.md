@@ -103,6 +103,23 @@ have been checked against their saved normal-training scores. The AnomalyCLIP
 evaluation notebook loads the frozen `mvtec` or `visa` artifact according to
 the target dataset; it never recalibrates during evaluation.
 
+## AA-CLIP Kaggle notebooks
+
+[`kaggle_new_aaclip_thresholds.ipynb`](kaggle_new_aaclip_thresholds.ipynb) and
+[`kaggle_new_aaclip.ipynb`](kaggle_new_aaclip.ipynb) reproduce the threshold and
+evaluation workflows for the official AA-CLIP implementation. Attach
+`parsagh1383/aa-clip-checkpoints-main` to both notebooks. The checkpoint mapping
+follows the zero-shot protocol: MVTec uses `TrainOnVisA`, and VisA uses
+`TrainOnMVTec`; an available `text_adapter.pth` is loaded alongside the required
+`image_adapter.pth`.
+
+Run the threshold notebook first, publish or attach its `aaclip_thresholds_q95`
+output as a Kaggle dataset, then run the evaluation notebook. The model adapter
+uses the official category-specific prompts and paper defaults: ViT-L/14@336px,
+518-pixel inputs, seed 111, residual adapter weights 0.1, adaptation depths 3
+and 6, feature levels 6/12/18/24, and the default CLI behavior with ReLU off.
+The OpenAI base checkpoint is checksum-verified before use.
+
 ## Outputs
 
 Each model run produces:
@@ -189,7 +206,7 @@ Keep the shared protocol code unchanged:
 2. Register it with `@register_adapter("<model>")` and import the module in
    `universal_eval/adapters/__init__.py`.
 3. Put all resizing, normalization, prompting, and checkpoint logic inside the
-   adapter's `predict()` method.
+   adapter's prediction methods.
 4. Create `kaggle_new_<model>.ipynb`. It should clone the model's official
    repository, configure per-target checkpoints, and call the same
    `EvaluationConfig`/`run_evaluation` API.
@@ -198,6 +215,8 @@ The adapter contract is intentionally small:
 
 ```python
 scores, low_resolution_maps = adapter.predict(images_01)
+# The runner calls this hook so class-prompted models receive category context.
+scores, low_resolution_maps = adapter.predict_with_categories(images_01, categories)
 ```
 
 `images_01` has shape `[B, 3, H, W]`. `scores` must have shape `[B]`, and maps
@@ -232,6 +251,8 @@ python -m pytest
 blackbox_evaluation_pipeline/
 ├── kaggle_new_anomalyclip.ipynb
 ├── kaggle_new_anomalyclip_thresholds.ipynb
+├── kaggle_new_aaclip.ipynb
+├── kaggle_new_aaclip_thresholds.ipynb
 ├── calculate_dataset_perturbations.ipynb
 ├── OFFICIAL_THRESHOLD_REVIEW.md
 ├── requirements.txt

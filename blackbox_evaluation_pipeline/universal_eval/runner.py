@@ -97,7 +97,9 @@ def _predict_clean(
     batches = list(_chunks(samples, batch_size))
     for batch in tqdm(batches, desc=description, leave=False):
         images = torch.stack([load_image(sample, image_size) for sample in batch])
-        scores, maps = adapter.predict(images)
+        scores, maps = adapter.predict_with_categories(
+            images, [sample.category for sample in batch]
+        )
         if len(scores) != len(batch) or len(maps) != len(batch):
             raise RuntimeError("Model adapter returned a different batch length")
         for sample, score, anomaly_map in zip(batch, scores, maps):
@@ -134,7 +136,9 @@ def _predict_adversarial(
                 clean[attacked_indices] + perturbation
             ).clamp(0.0, 1.0)
         linf = (adversarial - clean).abs().flatten(1).amax(dim=1).numpy()
-        scores, maps = adapter.predict(adversarial)
+        scores, maps = adapter.predict_with_categories(
+            adversarial, [sample.category for sample in batch]
+        )
         if len(scores) != len(batch) or len(maps) != len(batch):
             raise RuntimeError("Model adapter returned a different batch length")
         for sample, score, anomaly_map, distance in zip(batch, scores, maps, linf):
@@ -143,6 +147,29 @@ def _predict_adversarial(
             )
             actual_linf[sample.protocol_id] = float(distance)
     return predictions, actual_linf
+
+
+def _postprocess_prediction_scores(
+    adapter: Any,
+    samples: list[EvaluationSample],
+    predictions: dict[str, Prediction],
+) -> dict[str, Prediction]:
+    scores = np.asarray(
+        [predictions[sample.protocol_id][0] for sample in samples], dtype=np.float32
+    )
+    maps = [predictions[sample.protocol_id][1] for sample in samples]
+    processed = adapter.postprocess_image_scores(
+        scores,
+        np.asarray([float(anomaly_map.min()) for anomaly_map in maps]),
+        np.asarray([float(anomaly_map.max()) for anomaly_map in maps]),
+        [sample.category for sample in samples],
+    )
+    if processed.shape != scores.shape or not np.isfinite(processed).all():
+        raise ValueError("Postprocessed image scores must be finite and one per sample")
+    return {
+        sample.protocol_id: (float(score), anomaly_map)
+        for sample, score, anomaly_map in zip(samples, processed, maps)
+    }
 
 
 def _validate_ids(
@@ -564,6 +591,9 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                 batch_size=config.batch_size,
                 description=f"clean {target_dataset}",
             )
+            clean_predictions = _postprocess_prediction_scores(
+                adapter, clean_samples, clean_predictions
+            )
             for artifact in target_artifacts:
                 print(f"[condition] {artifact.name}")
                 delta = artifact.load_delta(verify_checksum=config.verify_checksums)
@@ -577,6 +607,9 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                     image_size=image_size,
                     batch_size=config.batch_size,
                     description=artifact.name,
+                )
+                adversarial_predictions = _postprocess_prediction_scores(
+                    adapter, evaluation, adversarial_predictions
                 )
 
                 grouped: dict[str, list[EvaluationSample]] = {}
