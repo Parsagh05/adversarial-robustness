@@ -1,8 +1,8 @@
-old_pipeline/splits/*.csv text eol=lf
-old_pipeline/splits/*.json text eol=lf
-old_pipeline/thresholds/**/*.json text eol=lf
-old_pipeline/thresholds/**/*.npz binary
-new_pipeline/**/*.py text eol=lf
-new_pipeline/**/*.json text eol=lf
-new_pipeline/**/*.csv text eol=lf
-new_pipeline/*.ipynb text eol=lf
+attack_generation_pipeline/splits/*.csv text eol=lf
+attack_generation_pipeline/splits/*.json text eol=lf
+attack_generation_pipeline/thresholds/**/*.json text eol=lf
+attack_generation_pipeline/thresholds/**/*.npz binary
+blackbox_evaluation_pipeline/**/*.py text eol=lf
+blackbox_evaluation_pipeline/**/*.json text eol=lf
+blackbox_evaluation_pipeline/**/*.csv text eol=lf
+blackbox_evaluation_pipeline/*.ipynb text eol=lf

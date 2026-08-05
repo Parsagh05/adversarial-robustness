@@ -9,8 +9,11 @@ import numpy as np
 from PIL import Image
 import torch
 
-from new_pipeline.universal_eval.adapters import ModelAdapter, register_adapter
-from new_pipeline.universal_eval.thresholds import (
+from blackbox_evaluation_pipeline.universal_eval.adapters import (
+    ModelAdapter,
+    register_adapter,
+)
+from blackbox_evaluation_pipeline.universal_eval.thresholds import (
     ThresholdCalibrationConfig,
     calibrate_thresholds,
 )

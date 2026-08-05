@@ -11,8 +11,14 @@ import numpy as np
 from PIL import Image
 import torch
 
-from new_pipeline.universal_eval.adapters import ModelAdapter, register_adapter
-from new_pipeline.universal_eval.runner import EvaluationConfig, run_evaluation
+from blackbox_evaluation_pipeline.universal_eval.adapters import (
+    ModelAdapter,
+    register_adapter,
+)
+from blackbox_evaluation_pipeline.universal_eval.runner import (
+    EvaluationConfig,
+    run_evaluation,
+)
 
 
 @register_adapter("unit_test_adapter")
@@ -108,4 +114,3 @@ class EndToEndRunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

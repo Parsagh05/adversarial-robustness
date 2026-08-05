@@ -4,7 +4,10 @@ import unittest
 
 import numpy as np
 
-from new_pipeline.universal_eval.metrics import image_metrics, pixel_metrics
+from blackbox_evaluation_pipeline.universal_eval.metrics import (
+    image_metrics,
+    pixel_metrics,
+)
 
 
 class ContinuousMetricTests(unittest.TestCase):
@@ -23,4 +26,3 @@ class ContinuousMetricTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

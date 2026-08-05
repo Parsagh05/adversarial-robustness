@@ -8,7 +8,7 @@ import unittest
 
 import torch
 
-from new_pipeline.universal_eval.artifacts import load_manifest
+from blackbox_evaluation_pipeline.universal_eval.artifacts import load_manifest
 
 
 class ArtifactManifestTests(unittest.TestCase):
@@ -47,4 +47,3 @@ class ArtifactManifestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

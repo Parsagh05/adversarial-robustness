@@ -41,7 +41,7 @@ Exact Google Drive source:
 After extraction, the expected local path is:
 
 ```text
-new_pipeline/perturbations/canonical_clip_universal_attacks_full/
+blackbox_evaluation_pipeline/perturbations/canonical_clip_universal_attacks_full/
 ```
 
 The archive is intentionally ignored by Git because it contains binary `.pt`
@@ -60,7 +60,7 @@ enable a GPU and Internet, confirm the MVTec/VisA mount paths, and run all cells
 The notebook independently:
 
 1. clones this experiment repository and the official AnomalyCLIP repository;
-2. installs `new_pipeline/requirements.txt`;
+2. installs `blackbox_evaluation_pipeline/requirements.txt`;
 3. locates or downloads the exact canonical archive;
 4. validates the manifest and dataset IDs;
 5. loads the appropriate AnomalyCLIP checkpoint for each target dataset;
@@ -153,7 +153,7 @@ The notebook uses the Python API directly. A JSON-configured CLI is also
 available:
 
 ```bash
-python -m new_pipeline.evaluate --config /path/to/config.json
+python -m blackbox_evaluation_pipeline.evaluate --config /path/to/config.json
 ```
 
 The JSON keys are the fields of `EvaluationConfig` in
@@ -163,14 +163,14 @@ dataset-specific checkpoints.
 For local validation:
 
 ```bash
-pip install -r new_pipeline/requirements-dev.txt
+pip install -r blackbox_evaluation_pipeline/requirements-dev.txt
 python -m pytest
 ```
 
 ## Layout
 
 ```text
-new_pipeline/
+blackbox_evaluation_pipeline/
 ├── kaggle_new_anomalyclip.ipynb
 ├── kaggle_new_anomalyclip_thresholds.ipynb
 ├── calculate_dataset_perturbations.ipynb

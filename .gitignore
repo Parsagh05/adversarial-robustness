@@ -81,5 +81,5 @@ dist/
 ~$*
 
 # Version-controlled calibration artifacts preserved with the old benchmark
-!old_pipeline/thresholds/
-!old_pipeline/thresholds/**
+!attack_generation_pipeline/thresholds/
+!attack_generation_pipeline/thresholds/**
