@@ -24,11 +24,15 @@ class EvaluationSample:
     image_path: Path
     mask_path: Path | None
     label: int
+    split: str = "test"
 
     @property
     def protocol_id(self) -> str:
         prefix = "visa/" if self.dataset == "visa" else ""
-        return f"test/{prefix}{self.category}/{self.defect_type}/{self.image_path.stem}"
+        return (
+            f"{self.split}/{prefix}{self.category}/{self.defect_type}/"
+            f"{self.image_path.stem}"
+        )
 
 
 def _image_files(directory: Path) -> Iterable[Path]:
@@ -79,6 +83,34 @@ def discover_mvtec(root: str | Path) -> list[EvaluationSample]:
     return samples
 
 
+def discover_mvtec_train_normal(root: str | Path) -> list[EvaluationSample]:
+    """Discover only MVTec's official ``train/good`` calibration images."""
+
+    root_path = Path(root).expanduser().resolve()
+    if not root_path.is_dir():
+        raise FileNotFoundError(f"MVTec root not found: {root_path}")
+    samples: list[EvaluationSample] = []
+    categories = sorted(
+        path for path in root_path.iterdir() if (path / "train" / "good").is_dir()
+    )
+    for category_path in categories:
+        for image_path in _image_files(category_path / "train" / "good"):
+            samples.append(
+                EvaluationSample(
+                    dataset="mvtec",
+                    category=category_path.name,
+                    defect_type="good",
+                    image_path=image_path,
+                    mask_path=None,
+                    label=0,
+                    split="train",
+                )
+            )
+    if not samples:
+        raise RuntimeError(f"No MVTec train/good samples found under {root_path}")
+    return samples
+
+
 def _visa_manifest(root: Path) -> Path:
     for candidate in (
         root / "split_csv" / "1cls.csv",
@@ -98,7 +130,9 @@ def _visa_path(root: Path, value: str) -> Path | None:
     return path if path.is_absolute() else root / path
 
 
-def discover_visa(root: str | Path) -> list[EvaluationSample]:
+def _discover_visa_split(
+    root: str | Path, split: str, *, normal_only: bool = False
+) -> list[EvaluationSample]:
     root_path = Path(root).expanduser().resolve()
     if not root_path.is_dir():
         raise FileNotFoundError(f"VisA root not found: {root_path}")
@@ -114,9 +148,11 @@ def discover_visa(root: str | Path) -> list[EvaluationSample]:
 
     samples: list[EvaluationSample] = []
     for row in rows:
-        if row["split"].lower() != "test":
+        if row["split"].lower() != split.lower():
             continue
         normal = row["label"].lower() in {"normal", "good", "0"}
+        if normal_only and not normal:
+            continue
         image_path = _visa_path(root_path, row["image"])
         if image_path is None or not image_path.is_file():
             raise FileNotFoundError(f"VisA image missing: {image_path}")
@@ -131,12 +167,26 @@ def discover_visa(root: str | Path) -> list[EvaluationSample]:
                 image_path=image_path,
                 mask_path=mask_path,
                 label=0 if normal else 1,
+                split=split.lower(),
             )
         )
     samples.sort(key=lambda sample: sample.protocol_id)
     if not samples:
-        raise RuntimeError(f"No VisA test samples found under {root_path}")
+        label = "normal " if normal_only else ""
+        raise RuntimeError(
+            f"No VisA {label}{split} samples found under {root_path}"
+        )
     return samples
+
+
+def discover_visa(root: str | Path) -> list[EvaluationSample]:
+    return _discover_visa_split(root, "test")
+
+
+def discover_visa_train_normal(root: str | Path) -> list[EvaluationSample]:
+    """Discover only normal images from VisA's official training split."""
+
+    return _discover_visa_split(root, "train", normal_only=True)
 
 
 def discover_dataset(
@@ -154,6 +204,25 @@ def discover_dataset(
             raise ValueError("visa_root is required for VisA evaluation")
         return discover_visa(visa_root)
     raise ValueError(f"Unsupported target dataset: {name!r}")
+
+
+def discover_calibration_dataset(
+    name: str,
+    *,
+    mvtec_root: str | Path | None,
+    visa_root: str | Path | None,
+) -> list[EvaluationSample]:
+    """Return normal training images without consulting test labels."""
+
+    if name == "mvtec":
+        if mvtec_root is None:
+            raise ValueError("mvtec_root is required for MVTec calibration")
+        return discover_mvtec_train_normal(mvtec_root)
+    if name == "visa":
+        if visa_root is None:
+            raise ValueError("visa_root is required for VisA calibration")
+        return discover_visa_train_normal(visa_root)
+    raise ValueError(f"Unsupported calibration dataset: {name!r}")
 
 
 def index_samples(samples: Iterable[EvaluationSample]) -> dict[str, EvaluationSample]:
@@ -188,4 +257,3 @@ def load_mask(sample: EvaluationSample, size: int) -> np.ndarray:
         .numpy()
         .astype(np.uint8)
     )
-

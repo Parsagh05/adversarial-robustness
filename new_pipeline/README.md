@@ -70,6 +70,34 @@ The notebook independently:
 one complete condition as an integration check; it does not subsample the fixed
 evaluation cohort.
 
+## AnomalyCLIP decision thresholds
+
+An audit of the official paper and repository found no published image-level
+normal/abnormal decision threshold. See
+[`OFFICIAL_THRESHOLD_REVIEW.md`](OFFICIAL_THRESHOLD_REVIEW.md) for the evidence.
+The official clean benchmark reports continuous AUROC, AP, pixel AUROC, and
+AUPRO, so there is no official MVTec or VisA numeric threshold to export.
+
+For the team's secondary classification-flip and targeted-success metrics, run
+[`kaggle_new_anomalyclip_thresholds.ipynb`](kaggle_new_anomalyclip_thresholds.ipynb).
+It independently clones the same repositories, loads the same target-specific
+checkpoints, and computes a custom per-dataset, per-category q95 threshold from
+normal training images only. It never uses test images, labeled anomalies, or
+adversarial images.
+
+The notebook generates and packages:
+
+```text
+/kaggle/working/anomalyclip_thresholds_q95/
+├── mvtec/{category_thresholds.json,normal_train_scores.npz,threshold_config.json}
+└── visa/{category_thresholds.json,normal_train_scores.npz,threshold_config.json}
+```
+
+These thresholds are a benchmark operating-point policy, not an official
+AnomalyCLIP result. Freeze the generated values and use the identical threshold
+for clean and adversarial scores. Recalibrate if the model checkpoint,
+preprocessing, image size, or anomaly-score implementation changes.
+
 ## Outputs
 
 Each model run produces:
@@ -144,7 +172,9 @@ python -m pytest
 ```text
 new_pipeline/
 ├── kaggle_new_anomalyclip.ipynb
+├── kaggle_new_anomalyclip_thresholds.ipynb
 ├── calculate_dataset_perturbations.ipynb
+├── OFFICIAL_THRESHOLD_REVIEW.md
 ├── requirements.txt
 ├── evaluate.py
 ├── universal_eval/
