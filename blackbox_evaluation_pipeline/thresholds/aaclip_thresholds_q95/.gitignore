@@ -1,0 +1,6 @@
+# Preserve these small, frozen calibration artifacts despite repository-wide
+# rules that ignore generated threshold JSON and NPZ files.
+!mvtec/category_thresholds.json
+!mvtec/normal_train_scores.npz
+!visa/category_thresholds.json
+!visa/normal_train_scores.npz

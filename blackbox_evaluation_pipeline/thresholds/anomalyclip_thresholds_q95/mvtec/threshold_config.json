@@ -1,0 +1,35 @@
+{
+  "output_root": "/kaggle/working/anomalyclip_thresholds_q95",
+  "model_name": "anomalyclip",
+  "model_kwargs_by_target": {
+    "mvtec": {
+      "repository_root": "/kaggle/working/AnomalyCLIP",
+      "checkpoint_path": "/kaggle/working/AnomalyCLIP/checkpoints/9_12_4_multiscale/epoch_15.pth",
+      "clip_download_root": "/kaggle/working/clip_cache"
+    },
+    "visa": {
+      "repository_root": "/kaggle/working/AnomalyCLIP",
+      "checkpoint_path": "/kaggle/working/AnomalyCLIP/checkpoints/9_12_4_multiscale_visa/epoch_15.pth",
+      "clip_download_root": "/kaggle/working/clip_cache"
+    }
+  },
+  "datasets": [
+    "mvtec",
+    "visa"
+  ],
+  "mvtec_root": "/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection",
+  "visa_root": "/kaggle/input/datasets/alirezasalehy/visa-ad/VisA_20220922",
+  "device": "cuda",
+  "batch_size": 2,
+  "image_size": 518,
+  "quantile": 0.95,
+  "provenance": "custom_q95_fallback_official_anomalyclip_has_no_decision_threshold",
+  "official_model_threshold": false,
+  "run_metadata": {
+    "anomalyclip_commit": "3911738c0867544f545a076ad78f3f11d9ecbfdf",
+    "official_repository": "https://github.com/zqhang/AnomalyCLIP.git",
+    "calibration_uses_test_data": false,
+    "calibration_uses_anomaly_data": false
+  },
+  "calibrated_dataset": "mvtec"
+}
