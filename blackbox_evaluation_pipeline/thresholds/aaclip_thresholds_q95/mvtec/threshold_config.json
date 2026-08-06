@@ -1,0 +1,58 @@
+{
+  "output_root": "/kaggle/working/aaclip_thresholds_q95",
+  "model_name": "aaclip",
+  "model_kwargs_by_target": {
+    "mvtec": {
+      "repository_root": "/kaggle/working/AA-CLIP",
+      "image_checkpoint_path": "/kaggle/input/datasets/parsagh1383/aa-clip-checkpoints-main/AA-CLIP_Checkpoints/TrainOnVisA/image_adapter.pth",
+      "text_checkpoint_path": "/kaggle/input/datasets/parsagh1383/aa-clip-checkpoints-main/AA-CLIP_Checkpoints/TrainOnVisA/text_adapter.pth",
+      "target_dataset": "mvtec"
+    },
+    "visa": {
+      "repository_root": "/kaggle/working/AA-CLIP",
+      "image_checkpoint_path": "/kaggle/input/datasets/parsagh1383/aa-clip-checkpoints-main/AA-CLIP_Checkpoints/TrainOnMVTec/image_adapter.pth",
+      "text_checkpoint_path": "/kaggle/input/datasets/parsagh1383/aa-clip-checkpoints-main/AA-CLIP_Checkpoints/TrainOnMVTec/text_adapter.pth",
+      "target_dataset": "visa"
+    }
+  },
+  "datasets": [
+    "mvtec",
+    "visa"
+  ],
+  "mvtec_root": "/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection",
+  "visa_root": "/kaggle/input/datasets/alirezasalehy/visa-ad/VisA_20220922",
+  "device": "cuda",
+  "batch_size": 2,
+  "image_size": 518,
+  "quantile": 0.95,
+  "provenance": "custom_q95_fallback_official_aaclip_has_no_decision_threshold",
+  "official_model_threshold": false,
+  "run_metadata": {
+    "aaclip_commit": "53db195f230442aa118c246876c94ba1c76139cc",
+    "official_repository": "https://github.com/Mwxinnn/AA-CLIP.git",
+    "checkpoint_dataset": "https://www.kaggle.com/datasets/parsagh1383/aa-clip-checkpoints-main",
+    "zero_shot_mapping": {
+      "mvtec": "TrainOnVisA",
+      "visa": "TrainOnMVTec"
+    },
+    "paper_defaults": {
+      "model_name": "ViT-L-14-336",
+      "image_size": 518,
+      "seed": 111,
+      "text_adapt_weight": 0.1,
+      "image_adapt_weight": 0.1,
+      "text_adapt_until": 3,
+      "image_adapt_until": 6,
+      "levels": [
+        6,
+        12,
+        18,
+        24
+      ],
+      "relu": false
+    },
+    "calibration_uses_test_data": false,
+    "calibration_uses_anomaly_data": false
+  },
+  "calibrated_dataset": "mvtec"
+}
