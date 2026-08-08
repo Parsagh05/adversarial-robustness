@@ -52,6 +52,32 @@ class ArtifactManifestTests(unittest.TestCase):
             self.assertEqual(artifacts[0].attacked_ids, ("test/toy/good/000",))
             self.assertEqual(tuple(artifacts[0].load_delta().shape), (1, 3, 4, 4))
 
+    def test_dataset_manifest_does_not_require_category_column(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "canonical_clip_per_dataset"
+            delta_path = bundle / "noises" / "mvtec" / "dataset.pt"
+            delta_path.parent.mkdir(parents=True)
+            torch.save({"delta": torch.zeros(1, 3, 4, 4)}, delta_path)
+            checksum = hashlib.sha256(delta_path.read_bytes()).hexdigest()
+            header = MANIFEST_HEADER.replace("target_dataset,category,", "target_dataset,")
+            row = (
+                "dataset,mvtec,mvtec,normal_to_abnormal,0,1,global,1,"
+                f"noises/mvtec/dataset.pt,delta,{checksum},4,{8 / 255}\n"
+            )
+            (bundle / "attack_manifest.csv").write_text(
+                header + row, encoding="utf-8"
+            )
+            (bundle / "evaluation_test_indices.csv").write_text(
+                INDEX_HEADER
+                + "test/toy/good/000,mvtec,toy,0,evaluation\n"
+                + "test/toy/crack/001,mvtec,toy,1,evaluation\n",
+                encoding="utf-8",
+            )
+
+            artifact = load_manifest(bundle, scopes=("per_dataset",))[0]
+
+            self.assertEqual(artifact.record["category"], "")
+
     def test_per_image_tensor_rows_follow_evaluation_csv_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             bundle = Path(temporary) / "canonical_clip_per_image"
@@ -80,6 +106,47 @@ class ArtifactManifestTests(unittest.TestCase):
                 {"test/visa/toy/bad/002": 0, "test/visa/toy/bad/003": 1},
             )
             self.assertEqual(tuple(artifact.load_delta().shape), (2, 3, 4, 4))
+
+    def test_per_image_tensor_is_reordered_from_embedded_sample_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "canonical_clip_per_image"
+            delta_path = bundle / "noises" / "visa" / "perturbations" / "toy.pt"
+            delta_path.parent.mkdir(parents=True)
+            first = "test/visa/toy/bad/002"
+            second = "test/visa/toy/bad/003"
+            torch.save(
+                {
+                    "deltas": torch.stack(
+                        [torch.full((3, 4, 4), 0.02), torch.full((3, 4, 4), 0.01)]
+                    ),
+                    "sample_ids": [second, first],
+                },
+                delta_path,
+            )
+            checksum = hashlib.sha256(delta_path.read_bytes()).hexdigest()
+            header = MANIFEST_HEADER.replace(
+                "noise_tensor_key,artifact_sha256,",
+                "noise_tensor_key,sample_ids_key,artifact_sha256,",
+            )
+            row = (
+                "per_image,visa,visa,toy,abnormal_to_normal,1,0,local,2,"
+                f"noises/visa/perturbations/toy.pt,deltas,sample_ids,{checksum},4,{8 / 255}\n"
+            )
+            (bundle / "attack_manifest.csv").write_text(
+                header + row, encoding="utf-8"
+            )
+            (bundle / "evaluation_test_indices.csv").write_text(
+                INDEX_HEADER
+                + "test/visa/toy/normal/001,visa,toy,0,evaluation\n"
+                + f"{first},visa,toy,1,evaluation\n"
+                + f"{second},visa,toy,1,evaluation\n",
+                encoding="utf-8",
+            )
+
+            delta = load_manifest(bundle, scopes=("per_image",))[0].load_delta()
+
+            self.assertAlmostEqual(float(delta[0].mean()), 0.01)
+            self.assertAlmostEqual(float(delta[1].mean()), 0.02)
 
 
 if __name__ == "__main__":

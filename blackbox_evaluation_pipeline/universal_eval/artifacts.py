@@ -35,7 +35,6 @@ REQUIRED_MANIFEST_FIELDS = {
     "scope",
     "source_dataset",
     "target_dataset",
-    "category",
     "direction",
     "source_label",
     "target_label",
@@ -181,6 +180,39 @@ class AttackArtifact:
                 f"{scope} tensor count mismatch in {self.delta_path}: "
                 f"expected {expected_count}, got {int(delta.shape[0])}"
             )
+        sample_ids_key = str(self.record.get("sample_ids_key") or "").strip()
+        if scope == "per_image" and sample_ids_key:
+            if not isinstance(payload, dict) or sample_ids_key not in payload:
+                raise KeyError(
+                    f"No per-image ID list named {sample_ids_key!r} in {self.delta_path}"
+                )
+            raw_sample_ids = payload[sample_ids_key]
+            if isinstance(raw_sample_ids, (str, bytes)):
+                raise TypeError(
+                    f"Per-image ID payload {sample_ids_key!r} must be a sequence"
+                )
+            try:
+                stored_ids = tuple(
+                    value.decode("utf-8") if isinstance(value, bytes) else str(value)
+                    for value in raw_sample_ids
+                )
+            except TypeError as error:
+                raise TypeError(
+                    f"Per-image ID payload {sample_ids_key!r} must be iterable"
+                ) from error
+            if len(stored_ids) != len(set(stored_ids)):
+                raise ValueError(f"Duplicate per-image IDs in {self.delta_path}")
+            if set(stored_ids) != set(self.attacked_ids):
+                missing = sorted(set(self.attacked_ids) - set(stored_ids))
+                unexpected = sorted(set(stored_ids) - set(self.attacked_ids))
+                raise ValueError(
+                    f"Per-image ID mismatch in {self.delta_path}: "
+                    f"missing={missing[:5]}, unexpected={unexpected[:5]}"
+                )
+            stored_index = {sample_id: index for index, sample_id in enumerate(stored_ids)}
+            delta = delta[
+                [stored_index[sample_id] for sample_id in self.attacked_ids]
+            ]
         delta = delta.detach().cpu().float().contiguous()
         if not torch.isfinite(delta).all():
             raise ValueError(f"Delta contains non-finite values: {self.delta_path}")

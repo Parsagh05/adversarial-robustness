@@ -31,8 +31,8 @@ Each directory contains `attack_manifest.csv`, `attack_train_indices.csv`,
 - `per_dataset`: one perturbation shared by every attacked-label evaluation image
   in the selected dataset;
 - `per_category`: one perturbation shared within a category;
-- `per_image`: one perturbation per attacked evaluation image, ordered exactly
-  as the matching rows in `evaluation_test_indices.csv`.
+- `per_image`: one perturbation per attacked evaluation image, aligned by the
+  serialized `sample_ids` stored beside `deltas` in each tensor file.
 
 Choose scopes and datasets independently in `EvaluationConfig`:
 
@@ -67,10 +67,13 @@ The notebook independently:
 5. loads the appropriate AnomalyCLIP checkpoint for each target dataset;
 6. evaluates all currently available conditions and packages the results.
 
-Set `ATTACK_SCOPES`, `ATTACK_DATASETS`, and the optional category/direction/loss
-filters near the top of either evaluation notebook. `FULL_RUN=True` evaluates
-all matching records. Setting it to `False` evaluates one complete condition as
-an integration check; it does not subsample the fixed evaluation cohort.
+Set `ATTACK_SCOPES`, `ATTACK_SOURCE_DATASETS`, `ATTACK_TARGET_DATASETS`, and the
+optional category/direction/loss filters near the top of either evaluation
+notebook. A target selects the dataset being evaluated; leaving sources as
+`None` includes both same- and cross-dataset attack origins where available.
+`FULL_RUN=True` evaluates all matching records. Setting it to `False` evaluates
+one complete condition as an integration check; it does not subsample the fixed
+evaluation cohort.
 
 ## Clean F1-optimal decision thresholds
 
@@ -84,7 +87,8 @@ Run the single multi-model notebook
 [`kaggle_new_thresholds.ipynb`](kaggle_new_thresholds.ipynb) before either
 evaluation notebook. Set `MODELS` to any configured subset, such as
 `("anomalyclip", "aaclip")`. For every model, dataset, and category, it runs
-clean inference on the fixed IDs in `dataset_csv/evaluation_test_indices.csv`
+clean inference on the fixed IDs in
+`dataset_csv/canonical_clip_per_dataset/evaluation_test_indices.csv`
 and selects the image-score threshold that maximizes F1. This follows the
 benchmark F1-max convention used by CRANE and deliberately uses clean
 evaluation labels; it is an oracle benchmark operating point, not a deployable
