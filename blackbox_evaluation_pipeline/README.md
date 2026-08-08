@@ -135,6 +135,11 @@ Each model run produces:
   maps;
 - `run_config.json` and `manifest_snapshot.json`: reproducibility metadata.
 
+`prediction_map_size` controls only the maps stored in the prediction archives;
+it does not change the full-resolution maps used to calculate pixel metrics or
+create qualitative figures. The AA-CLIP Kaggle notebook sets it to `37`, reducing
+each saved 518x518 map to 37x37 while preserving full-resolution evaluation.
+
 The AnomalyCLIP notebook also creates a separate qualitative-samples archive;
 it is not placed inside the numerical-results ZIP. For each attack condition,
 eligible attacked images are ranked by their adversarial target margin:

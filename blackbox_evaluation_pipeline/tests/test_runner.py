@@ -152,6 +152,7 @@ class EndToEndRunnerTests(unittest.TestCase):
                     metric_size=4,
                     anomaly_map_sigma=0,
                     aupro_max_thresholds=10,
+                    prediction_map_size=2,
                     save_qualitative_samples=True,
                     qualitative_output_root=str(qualitative_output),
                 )
@@ -191,6 +192,10 @@ class EndToEndRunnerTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     predictions["adversarial_binary_predictions"].tolist(), [1, 1]
+                )
+                self.assertEqual(predictions["clean_lowres_maps"].shape, (2, 2, 2))
+                self.assertEqual(
+                    predictions["adversarial_lowres_maps"].shape, (2, 2, 2)
                 )
             sample_folder = qualitative_output / (
                 "mvtec__mvtec__normal_to_abnormal__global__per_dataset"

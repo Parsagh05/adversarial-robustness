@@ -11,6 +11,7 @@ from typing import Any, Iterable
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from tqdm.auto import tqdm
 
 from .adapters import build_adapter
@@ -50,6 +51,7 @@ class EvaluationConfig:
     aupro_max_thresholds: int = 200
     verify_checksums: bool = True
     save_predictions: bool = True
+    prediction_map_size: int | None = None
     save_qualitative_samples: bool = False
     qualitative_output_root: str | None = None
     source_datasets: tuple[str, ...] | None = None
@@ -67,6 +69,8 @@ class EvaluationConfig:
             raise ValueError("batch_size must be positive")
         if self.metric_size < 1:
             raise ValueError("metric_size must be positive")
+        if self.prediction_map_size is not None and self.prediction_map_size < 1:
+            raise ValueError("prediction_map_size must be positive when supplied")
         if not 0.0 < self.aupro_fpr_limit <= 1.0:
             raise ValueError("aupro_fpr_limit must be in (0, 1]")
         if self.max_conditions is not None and self.max_conditions < 1:
@@ -474,8 +478,38 @@ def _save_predictions(
     adversarial: dict[str, Prediction],
     attacked_ids: set[str],
     category_thresholds: dict[str, float] | None,
+    prediction_map_size: int | None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    def maps_for_storage(predictions: dict[str, Prediction]) -> np.ndarray:
+        maps = [predictions[sample.protocol_id][1] for sample in samples]
+        if prediction_map_size is None or maps[0].shape[-2:] == (
+            prediction_map_size,
+            prediction_map_size,
+        ):
+            return np.stack(maps).astype(np.float32, copy=False)
+        resized: list[np.ndarray] = []
+        # Avoid materializing another full 518x518 stack for AA-CLIP.
+        for start in range(0, len(maps), 32):
+            tensor = torch.from_numpy(
+                np.stack(maps[start : start + 32]).astype(np.float32, copy=False)
+            ).unsqueeze(1)
+            resized.append(
+                F.interpolate(
+                    tensor,
+                    size=(prediction_map_size, prediction_map_size),
+                    mode="bilinear",
+                    align_corners=False,
+                    antialias=True,
+                )
+                .squeeze(1)
+                .numpy()
+            )
+        return np.concatenate(resized)
+
+    clean_maps = maps_for_storage(clean)
+    adversarial_maps = maps_for_storage(adversarial)
     payload: dict[str, np.ndarray] = {
         "sample_ids": np.asarray([sample.protocol_id for sample in samples]),
         "labels": np.asarray([sample.label for sample in samples], dtype=np.uint8),
@@ -489,12 +523,8 @@ def _save_predictions(
             [adversarial[sample.protocol_id][0] for sample in samples],
             dtype=np.float32,
         ),
-        "clean_lowres_maps": np.stack(
-            [clean[sample.protocol_id][1] for sample in samples]
-        ),
-        "adversarial_lowres_maps": np.stack(
-            [adversarial[sample.protocol_id][1] for sample in samples]
-        ),
+        "clean_lowres_maps": clean_maps,
+        "adversarial_lowres_maps": adversarial_maps,
     }
     if category_thresholds is not None:
         thresholds = np.asarray(
@@ -681,6 +711,7 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                         adversarial_predictions,
                         attacked_set,
                         category_thresholds,
+                        config.prediction_map_size,
                     )
                 # Persist after every condition so long Kaggle runs retain progress.
                 _write_csv(output / "category_metrics.csv", category_rows)
