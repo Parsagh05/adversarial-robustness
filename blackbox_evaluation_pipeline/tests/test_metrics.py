@@ -7,22 +7,32 @@ import numpy as np
 from blackbox_evaluation_pipeline.universal_eval.metrics import (
     binary_classification_metrics,
     image_metrics,
+    optimal_f1_operating_point,
     pixel_metrics,
     targeted_attack_metrics,
 )
 
 
 class ContinuousMetricTests(unittest.TestCase):
+    def test_f1_optimal_threshold(self) -> None:
+        point = optimal_f1_operating_point(
+            [0, 0, 1, 1], [0.1, 0.2, 0.6, 0.9]
+        )
+        self.assertAlmostEqual(point["threshold"], 0.6)
+        self.assertAlmostEqual(point["f1"], 1.0)
+
     def test_perfect_image_ranking_is_one_hundred(self) -> None:
         result = image_metrics([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9])
         self.assertAlmostEqual(result["i_auroc"], 100.0)
         self.assertAlmostEqual(result["i_ap"], 100.0)
+        self.assertAlmostEqual(result["i_f1_max"], 100.0)
 
     def test_perfect_pixel_ranking_is_one_hundred(self) -> None:
         masks = np.asarray([[[0, 0], [1, 1]]], dtype=np.uint8)
         maps = np.asarray([[[0.1, 0.2], [0.8, 0.9]]], dtype=np.float32)
         result = pixel_metrics(masks, maps, fpr_limit=0.3, max_thresholds=20)
         self.assertAlmostEqual(result["p_auroc"], 100.0)
+        self.assertAlmostEqual(result["p_f1_max"], 100.0)
         self.assertGreaterEqual(result["aupro"], 99.0)
 
     def test_binary_classification_metrics(self) -> None:

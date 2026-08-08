@@ -381,7 +381,14 @@ def _metric_row(
     }
     if threshold is not None:
         row["threshold"] = threshold
-    for metric in ("i_auroc", "i_ap", "p_auroc", "aupro"):
+    for metric in (
+        "i_auroc",
+        "i_ap",
+        "i_f1_max",
+        "p_auroc",
+        "p_f1_max",
+        "aupro",
+    ):
         row[f"clean_{metric}"] = clean[metric]
         row[f"adversarial_{metric}"] = adversarial[metric]
         row[f"delta_{metric}"] = clean[metric] - adversarial[metric]
@@ -413,7 +420,14 @@ def _macro_row(artifact: AttackArtifact, rows: list[dict[str, Any]], model: str)
         "mean_actual_linf",
     ] + [
         f"{prefix}_{metric}"
-        for metric in ("i_auroc", "i_ap", "p_auroc", "aupro")
+        for metric in (
+            "i_auroc",
+            "i_ap",
+            "i_f1_max",
+            "p_auroc",
+            "p_f1_max",
+            "aupro",
+        )
         for prefix in ("clean", "adversarial", "delta")
     ]
     threshold_mean_fields = [

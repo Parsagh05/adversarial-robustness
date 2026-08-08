@@ -131,7 +131,7 @@ class EndToEndRunnerTests(unittest.TestCase):
                     {
                         "target_model": "unit-test-adapter",
                         "dataset": "mvtec",
-                        "threshold_mode": "normal_train_quantile",
+                        "threshold_mode": "clean_f1_optimal",
                         "categories": {"toy": {"threshold": 0.01}},
                     }
                 ),

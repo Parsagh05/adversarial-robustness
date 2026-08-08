@@ -15,14 +15,15 @@ image-level normal/abnormal decision threshold:
   abnormal-class probability as the anomaly score and reports the same
   threshold-independent metrics, but does not specify an operating threshold.
 
-Consequently, there is no official numeric threshold to export for MVTec AD or
-VisA. `kaggle_new_anomalyclip_thresholds.ipynb` creates a custom fallback for
-the team's secondary threshold-dependent attack metrics. It uses the 95th
-percentile of scores from normal training images separately for every target
-dataset and category. The generated artifacts explicitly record that this is
-not an official AnomalyCLIP threshold.
+Consequently, there is no official fixed numeric threshold to export for MVTec
+AD or VisA. `kaggle_new_thresholds.ipynb` follows CRANE's F1-max benchmark
+convention: it selects the threshold maximizing image F1 from the fixed clean
+evaluation scores and labels, separately for every model, target dataset, and
+category. The generated artifacts record that this is not an official model
+threshold and that clean evaluation labels were used.
 
-This calibration must not be described as part of AnomalyCLIP's official clean
-benchmark. It is a leakage-free operating-point policy chosen for the
-adversarial comparison. Official AUROC/AP/AUPRO results remain unchanged and do
-not consume the generated thresholds.
+This calibration must not be described as an official AnomalyCLIP threshold or
+as leakage-free deployment calibration. It is an oracle benchmark operating
+point. The value is frozen before applying attacks and reused for accuracy,
+flip rate, targeted success, FPR, and FNR. AUROC/AP/AUPRO remain independent of
+the frozen threshold.

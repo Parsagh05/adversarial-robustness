@@ -72,7 +72,7 @@ filters near the top of either evaluation notebook. `FULL_RUN=True` evaluates
 all matching records. Setting it to `False` evaluates one complete condition as
 an integration check; it does not subsample the fixed evaluation cohort.
 
-## AnomalyCLIP decision thresholds
+## Clean F1-optimal decision thresholds
 
 An audit of the official paper and repository found no published image-level
 normal/abnormal decision threshold. See
@@ -80,34 +80,31 @@ normal/abnormal decision threshold. See
 The official clean benchmark reports continuous AUROC, AP, pixel AUROC, and
 AUPRO, so there is no official MVTec or VisA numeric threshold to export.
 
-For the team's secondary classification-flip and targeted-success metrics, run
-[`kaggle_new_anomalyclip_thresholds.ipynb`](kaggle_new_anomalyclip_thresholds.ipynb).
-It independently clones the same repositories, loads the same target-specific
-checkpoints, and computes a custom per-dataset, per-category q95 threshold from
-normal training images only. It never uses test images, labeled anomalies, or
-adversarial images.
+Run the single multi-model notebook
+[`kaggle_new_thresholds.ipynb`](kaggle_new_thresholds.ipynb) before either
+evaluation notebook. Set `MODELS` to any configured subset, such as
+`("anomalyclip", "aaclip")`. For every model, dataset, and category, it runs
+clean inference on the fixed IDs in `dataset_csv/evaluation_test_indices.csv`
+and selects the image-score threshold that maximizes F1. This follows the
+benchmark F1-max convention used by CRANE and deliberately uses clean
+evaluation labels; it is an oracle benchmark operating point, not a deployable
+normal-only calibration policy.
 
-The notebook generates and packages:
+The notebook packages all selected models under
+`/kaggle/working/f1_optimal_thresholds/<model>/<dataset>/`. Every dataset folder
+contains `category_thresholds.json`, `clean_evaluation_scores.npz`, and
+`threshold_config.json`.
 
-```text
-/kaggle/working/anomalyclip_thresholds_q95/
-├── mvtec/{category_thresholds.json,normal_train_scores.npz,threshold_config.json}
-└── visa/{category_thresholds.json,normal_train_scores.npz,threshold_config.json}
-```
-
-These thresholds are a benchmark operating-point policy, not an official
-AnomalyCLIP result. Freeze the generated values and use the identical threshold
-for clean and adversarial scores. Recalibrate if the model checkpoint,
-preprocessing, image size, or anomaly-score implementation changes.
-
-The committed q95 artifacts under `attack_generation_pipeline/thresholds/`
-have been checked against their saved normal-training scores. The AnomalyCLIP
-evaluation notebook loads the frozen `mvtec` or `visa` artifact according to
-the target dataset; it never recalibrates during evaluation.
+Publish or attach that combined output once. Both evaluation notebooks select
+their own model/dataset artifact. The clean optimal threshold is frozen for
+adversarial accuracy, flip rate, targeted success, FPR, FNR, and qualitative
+selection. Adversarial samples are never used to retune those binary decisions.
+Recalibrate when the checkpoint, preprocessing, image size, fixed cohort, or
+anomaly-score implementation changes.
 
 ## AA-CLIP Kaggle notebooks
 
-[`kaggle_new_aaclip_thresholds.ipynb`](kaggle_new_aaclip_thresholds.ipynb) and
+[`kaggle_new_thresholds.ipynb`](kaggle_new_thresholds.ipynb) and
 [`kaggle_new_aaclip.ipynb`](kaggle_new_aaclip.ipynb) reproduce the threshold and
 evaluation workflows for the official AA-CLIP implementation. Attach
 `parsagh1383/aa-clip-checkpoints-main` to both notebooks. The checkpoint mapping
@@ -115,7 +112,7 @@ follows the zero-shot protocol: MVTec uses `TrainOnVisA`, and VisA uses
 `TrainOnMVTec`; an available `text_adapter.pth` is loaded alongside the required
 `image_adapter.pth`.
 
-Run the threshold notebook first, publish or attach its `aaclip_thresholds_q95`
+Run the threshold notebook first, publish or attach its `f1_optimal_thresholds`
 output as a Kaggle dataset, then run the evaluation notebook. The model adapter
 uses the official category-specific prompts and paper defaults: ViT-L/14@336px,
 518-pixel inputs, seed 111, residual adapter weights 0.1, adaptation depths 3
@@ -174,7 +171,9 @@ Continuous performance metrics are reported on a `0–100` scale:
 
 - image AUROC (`i_auroc`);
 - image average precision (`i_ap`);
+- image F1-max (`i_f1_max`);
 - pixel AUROC (`p_auroc`);
+- pixel F1-max (`p_f1_max`);
 - AUPRO integrated to FPR 0.30 (`aupro`).
 
 For each metric, `delta = clean - adversarial`, so a positive delta means the
@@ -212,6 +211,8 @@ Keep the shared protocol code unchanged:
 4. Create `kaggle_new_<model>.ipynb`. It should clone the model's official
    repository, configure per-target checkpoints, and call the same
    `EvaluationConfig`/`run_evaluation` API.
+5. Add its repository/checkpoint setup to `MODEL_CONFIGURATIONS` in
+   `kaggle_new_thresholds.ipynb`, then include its adapter name in `MODELS`.
 
 The adapter contract is intentionally small:
 
@@ -253,9 +254,8 @@ python -m pytest
 ```text
 blackbox_evaluation_pipeline/
 ├── kaggle_new_anomalyclip.ipynb
-├── kaggle_new_anomalyclip_thresholds.ipynb
 ├── kaggle_new_aaclip.ipynb
-├── kaggle_new_aaclip_thresholds.ipynb
+├── kaggle_new_thresholds.ipynb
 ├── calculate_dataset_perturbations.ipynb
 ├── OFFICIAL_THRESHOLD_REVIEW.md
 ├── requirements.txt

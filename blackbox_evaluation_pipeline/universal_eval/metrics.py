@@ -10,7 +10,9 @@ import torch
 import torch.nn.functional as F
 
 
-def _binary_curve(labels: Sequence[int], scores: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
+def _binary_curve_details(
+    labels: Sequence[int], scores: Sequence[float]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     labels_array = np.asarray(labels, dtype=np.uint8)
     scores_array = np.asarray(scores, dtype=np.float64)
     if labels_array.ndim != 1 or labels_array.shape != scores_array.shape:
@@ -23,11 +25,79 @@ def _binary_curve(labels: Sequence[int], scores: Sequence[float]) -> tuple[np.nd
     indices = np.r_[np.where(np.diff(sorted_scores))[0], labels_array.size - 1]
     true_positives = np.cumsum(sorted_labels, dtype=np.float64)[indices]
     false_positives = 1.0 + indices - true_positives
+    return false_positives, true_positives, sorted_scores[indices]
+
+
+def _binary_curve(
+    labels: Sequence[int], scores: Sequence[float]
+) -> tuple[np.ndarray, np.ndarray]:
+    false_positives, true_positives, _ = _binary_curve_details(labels, scores)
     return false_positives, true_positives
+
+
+def _optimal_f1_from_curve(
+    false_positives: np.ndarray,
+    true_positives: np.ndarray,
+    thresholds: np.ndarray,
+    *,
+    positive_count: int,
+) -> dict[str, float]:
+    false_negatives = float(positive_count) - true_positives
+    denominator = 2.0 * true_positives + false_positives + false_negatives
+    f1 = np.divide(
+        2.0 * true_positives,
+        denominator,
+        out=np.zeros_like(true_positives),
+        where=denominator > 0,
+    )
+    index = int(np.argmax(f1))
+    precision_denominator = true_positives[index] + false_positives[index]
+    precision = (
+        true_positives[index] / precision_denominator
+        if precision_denominator > 0
+        else 0.0
+    )
+    recall = true_positives[index] / float(positive_count)
+    return {
+        "threshold": float(thresholds[index]),
+        "f1": float(f1[index]),
+        "precision": float(precision),
+        "recall": float(recall),
+    }
+
+
+def optimal_f1_operating_point(
+    labels: Sequence[int], scores: Sequence[float]
+) -> dict[str, float]:
+    """Return the score threshold that maximizes binary F1.
+
+    Predictions use ``score >= threshold``. If multiple thresholds have the
+    same F1, the highest threshold is selected as the deterministic,
+    conservative tie-break.
+    """
+
+    labels_array = np.asarray(labels, dtype=np.uint8)
+    if labels_array.ndim != 1 or not np.isin(labels_array, (0, 1)).all():
+        raise ValueError("F1 labels must be a one-dimensional binary array")
+    if np.unique(labels_array).size < 2:
+        raise ValueError("F1 threshold selection requires both classes")
+    false_positives, true_positives, thresholds = _binary_curve_details(
+        labels_array, scores
+    )
+    return _optimal_f1_from_curve(
+        false_positives,
+        true_positives,
+        thresholds,
+        positive_count=int(labels_array.sum()),
+    )
 
 
 def _auroc(labels: Sequence[int], scores: Sequence[float]) -> float:
     fp, tp = _binary_curve(labels, scores)
+    return _auroc_from_curve(fp, tp)
+
+
+def _auroc_from_curve(fp: np.ndarray, tp: np.ndarray) -> float:
     fpr = np.r_[0.0, fp / fp[-1]]
     tpr = np.r_[0.0, tp / tp[-1]]
     trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
@@ -36,6 +106,10 @@ def _auroc(labels: Sequence[int], scores: Sequence[float]) -> float:
 
 def _average_precision(labels: Sequence[int], scores: Sequence[float]) -> float:
     fp, tp = _binary_curve(labels, scores)
+    return _average_precision_from_curve(fp, tp)
+
+
+def _average_precision_from_curve(fp: np.ndarray, tp: np.ndarray) -> float:
     precision = tp / (tp + fp)
     recall = tp / tp[-1]
     return float(np.sum(np.diff(np.r_[0.0, recall]) * precision))
@@ -44,10 +118,19 @@ def _average_precision(labels: Sequence[int], scores: Sequence[float]) -> float:
 def image_metrics(labels: Sequence[int], scores: Sequence[float]) -> dict[str, float]:
     labels_array = np.asarray(labels, dtype=np.uint8)
     if np.unique(labels_array).size < 2:
-        return {"i_auroc": float("nan"), "i_ap": float("nan")}
+        return {
+            "i_auroc": float("nan"),
+            "i_ap": float("nan"),
+            "i_f1_max": float("nan"),
+        }
+    fp, tp, thresholds = _binary_curve_details(labels_array, scores)
+    operating_point = _optimal_f1_from_curve(
+        fp, tp, thresholds, positive_count=int(labels_array.sum())
+    )
     return {
-        "i_auroc": 100.0 * _auroc(labels_array, scores),
-        "i_ap": 100.0 * _average_precision(labels_array, scores),
+        "i_auroc": 100.0 * _auroc_from_curve(fp, tp),
+        "i_ap": 100.0 * _average_precision_from_curve(fp, tp),
+        "i_f1_max": 100.0 * operating_point["f1"],
     }
 
 
@@ -199,9 +282,18 @@ def pixel_metrics(
     flat_masks = (np.asarray(masks) > 0).reshape(-1).astype(np.uint8)
     flat_maps = np.asarray(maps, dtype=np.float32).reshape(-1)
     if np.unique(flat_masks).size < 2:
-        return {"p_auroc": float("nan"), "aupro": float("nan")}
+        return {
+            "p_auroc": float("nan"),
+            "p_f1_max": float("nan"),
+            "aupro": float("nan"),
+        }
+    fp, tp, thresholds = _binary_curve_details(flat_masks, flat_maps)
+    operating_point = _optimal_f1_from_curve(
+        fp, tp, thresholds, positive_count=int(flat_masks.sum())
+    )
     return {
-        "p_auroc": 100.0 * _auroc(flat_masks, flat_maps),
+        "p_auroc": 100.0 * _auroc_from_curve(fp, tp),
+        "p_f1_max": 100.0 * operating_point["f1"],
         "aupro": compute_aupro(
             masks, maps, fpr_limit=fpr_limit, max_thresholds=max_thresholds
         ),

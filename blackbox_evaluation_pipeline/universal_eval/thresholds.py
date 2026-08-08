@@ -1,8 +1,9 @@
-"""Leakage-free model threshold calibration on normal training images."""
+"""Clean F1-optimal operating points for benchmark evaluation."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import csv
 import json
 from pathlib import Path
 from typing import Any, Iterable
@@ -12,7 +13,8 @@ import torch
 from tqdm.auto import tqdm
 
 from .adapters import build_adapter
-from .datasets import EvaluationSample, discover_calibration_dataset, load_image
+from .datasets import EvaluationSample, discover_dataset, index_samples, load_image
+from .metrics import optimal_f1_operating_point
 
 
 def _normalized_model_name(value: str) -> str:
@@ -44,8 +46,8 @@ def load_category_thresholds(
         raise ValueError(
             f"Threshold model mismatch: expected {expected_model!r}, got {model!r}"
         )
-    if payload.get("threshold_mode") != "normal_train_quantile":
-        raise ValueError("Only frozen normal-training quantile thresholds are supported")
+    if payload.get("threshold_mode") != "clean_f1_optimal":
+        raise ValueError("Only frozen clean F1-optimal thresholds are supported")
     records = payload.get("categories")
     if not isinstance(records, dict) or not records:
         raise ValueError("Threshold artifact must contain non-empty category records")
@@ -71,8 +73,8 @@ class ThresholdCalibrationConfig:
     device: str = "cuda"
     batch_size: int = 2
     image_size: int = 518
-    quantile: float = 0.95
-    provenance: str = "custom_normal_train_quantile_no_official_threshold"
+    evaluation_index_path: str | None = None
+    provenance: str = "clean_evaluation_f1_optimal_following_crane"
     official_model_threshold: bool = False
     run_metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -86,8 +88,12 @@ class ThresholdCalibrationConfig:
             raise ValueError("Calibration datasets must not contain duplicates")
         if self.batch_size < 1:
             raise ValueError("batch_size must be positive")
-        if not 0.0 < self.quantile < 1.0:
-            raise ValueError("quantile must be in (0, 1)")
+        if self.evaluation_index_path is not None and not Path(
+            self.evaluation_index_path
+        ).is_file():
+            raise FileNotFoundError(
+                f"Evaluation index not found: {self.evaluation_index_path}"
+            )
 
 
 def _chunks(
@@ -134,10 +140,50 @@ def _json_config(config: ThresholdCalibrationConfig) -> dict[str, Any]:
     return json.loads(json.dumps(asdict(config), default=str))
 
 
+def _select_evaluation_samples(
+    samples: list[EvaluationSample],
+    *,
+    dataset: str,
+    evaluation_index_path: str | None,
+) -> list[EvaluationSample]:
+    """Select the fixed final-evaluation cohort in CSV order when configured."""
+
+    if evaluation_index_path is None:
+        return samples
+    path = Path(evaluation_index_path).expanduser().resolve()
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    required = {"protocol_id", "dataset", "category", "label", "partition"}
+    if not rows or not required.issubset(rows[0]):
+        raise ValueError(f"Evaluation index must contain {sorted(required)}: {path}")
+    selected_rows = [
+        row
+        for row in rows
+        if row["dataset"] == dataset and row["partition"] == "evaluation"
+    ]
+    if not selected_rows:
+        raise ValueError(f"No fixed evaluation rows found for {dataset!r} in {path}")
+    sample_index = index_samples(samples)
+    selected: list[EvaluationSample] = []
+    seen: set[str] = set()
+    for row in selected_rows:
+        sample_id = row["protocol_id"]
+        if sample_id in seen:
+            raise ValueError(f"Duplicate evaluation protocol ID in {path}: {sample_id}")
+        seen.add(sample_id)
+        sample = sample_index.get(sample_id)
+        if sample is None:
+            raise ValueError(f"Evaluation ID is absent from {dataset}: {sample_id}")
+        if sample.category != row["category"] or sample.label != int(row["label"]):
+            raise ValueError(f"Evaluation metadata mismatch for {sample_id}")
+        selected.append(sample)
+    return selected
+
+
 def calibrate_thresholds(
     config: ThresholdCalibrationConfig,
 ) -> dict[str, Path]:
-    """Calibrate q-thresholds and return one JSON artifact path per dataset."""
+    """Calibrate clean F1-optimal thresholds, one JSON artifact per dataset."""
 
     if config.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable; enable a Kaggle GPU")
@@ -146,11 +192,16 @@ def calibrate_thresholds(
     generated: dict[str, Path] = {}
 
     for dataset in config.datasets:
-        print(f"[calibration] Discovering normal training images for {dataset}")
-        samples = discover_calibration_dataset(
+        print(f"[calibration] Discovering clean labeled evaluation images for {dataset}")
+        samples = discover_dataset(
             dataset,
             mvtec_root=config.mvtec_root,
             visa_root=config.visa_root,
+        )
+        samples = _select_evaluation_samples(
+            samples,
+            dataset=dataset,
+            evaluation_index_path=config.evaluation_index_path,
         )
         kwargs = dict(config.model_kwargs_by_target.get(dataset, {}))
         if not kwargs:
@@ -165,7 +216,7 @@ def calibrate_thresholds(
                 samples,
                 image_size=config.image_size,
                 batch_size=config.batch_size,
-                description=f"q{config.quantile:g} {dataset}",
+                description=f"clean F1-optimal {dataset}",
             )
         finally:
             adapter.release()
@@ -176,15 +227,28 @@ def calibrate_thresholds(
                 index for index, sample in enumerate(samples) if sample.category == category
             ]
             category_scores = scores[indices].astype(np.float64)
+            category_labels = np.asarray(
+                [samples[index].label for index in indices], dtype=np.uint8
+            )
+            operating_point = optimal_f1_operating_point(
+                category_labels, category_scores
+            )
             categories[category] = {
                 "dataset": dataset,
-                "threshold": float(np.quantile(category_scores, config.quantile)),
+                "threshold": operating_point["threshold"],
+                "f1_max": 100.0 * operating_point["f1"],
+                "precision_at_threshold": 100.0 * operating_point["precision"],
+                "recall_at_threshold": 100.0 * operating_point["recall"],
                 "sample_count": len(indices),
+                "normal_count": int((category_labels == 0).sum()),
+                "anomaly_count": int((category_labels == 1).sum()),
                 "score_min": float(category_scores.min()),
                 "score_mean": float(category_scores.mean()),
                 "score_max": float(category_scores.max()),
                 "score_std": float(category_scores.std()),
-                "calibration_sample_ids": [samples[index].protocol_id for index in indices],
+                "calibration_sample_ids": [
+                    samples[index].protocol_id for index in indices
+                ],
             }
 
         dataset_output = output_root / dataset
@@ -194,19 +258,22 @@ def calibrate_thresholds(
             "target_model": config.model_name,
             "dataset": dataset,
             "image_size": config.image_size,
-            "calibration_split": "normal training split",
-            "threshold_mode": "normal_train_quantile",
-            "threshold_quantile": config.quantile,
+            "calibration_split": "clean labeled evaluation split",
+            "threshold_mode": "clean_f1_optimal",
             "provenance": config.provenance,
             "official_model_threshold": config.official_model_threshold,
+            "uses_test_labels": True,
+            "evaluation_index_path": config.evaluation_index_path,
+            "run_metadata": config.run_metadata,
             "categories": categories,
         }
         threshold_path = dataset_output / "category_thresholds.json"
         threshold_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         np.savez_compressed(
-            dataset_output / "normal_train_scores.npz",
+            dataset_output / "clean_evaluation_scores.npz",
             sample_ids=np.asarray([sample.protocol_id for sample in samples]),
             categories=np.asarray([sample.category for sample in samples]),
+            labels=np.asarray([sample.label for sample in samples], dtype=np.uint8),
             scores=scores,
         )
         config_payload = _json_config(config)
