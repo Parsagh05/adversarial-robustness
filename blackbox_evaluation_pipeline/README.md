@@ -1,11 +1,12 @@
-# Fixed-perturbation evaluation pipeline
+# Canonical attack evaluation pipeline
 
-This pipeline compares anomaly-detection models using perturbations that have
-already been generated. It never regenerates attacks or creates a random data
-split. The canonical JSON manifest is the authority for:
+This pipeline compares anomaly-detection models using the already-generated
+attacks in the Kaggle dataset `alirezasalehy/adversarial-attacks-vlm-survey`.
+It never regenerates attacks or creates a random split. Each bundle's
+`attack_manifest.csv` and `evaluation_test_indices.csv` are the authority for:
 
 - the exact evaluation image IDs;
-- the subset of evaluation images that receives each perturbation;
+- the exact and ordered subset that receives each perturbation;
 - source/target datasets, attack direction, objective, and scope;
 - perturbation paths, image size, epsilon, and file checksums.
 
@@ -13,45 +14,45 @@ The model adapter receives clean/adversarial RGB tensors in `[0, 1]` and owns
 all model-specific preprocessing. This keeps the clean/adversarial construction
 identical across models.
 
-## Current coverage
+## Attack bundles and selection
 
-The supplied archive currently contains 12 dataset-universal attacks:
-
-| Source | Target | Directions | Objectives | Count |
-|---|---|---|---|---:|
-| MVTec AD | VisA | normal→abnormal, abnormal→normal | global, local, combined | 6 |
-| VisA | MVTec AD | normal→abnormal, abnormal→normal | global, local, combined | 6 |
-
-Standalone MVTec→MVTec and VisA→VisA records are not yet in this archive.
-When dataset-universal records for those protocols are appended to the same
-canonical manifest and their tensors are added to the archive, the runner will
-discover and evaluate them automatically.
-
-The current runner deliberately accepts `scope="dataset"` tensors only. It
-fails explicitly if a future manifest introduces per-image or per-category
-payload formats; support for those formats should be added as separate artifact
-providers rather than inferred silently.
-
-## Canonical artifacts
-
-Exact Google Drive source:
-
-<https://drive.google.com/file/d/10ZiaDs6u5G_WFVbrd9tt-Ug6Dy_aaFS5/view?usp=sharing>
-
-After extraction, the expected local path is:
+Mount this dataset root:
 
 ```text
-blackbox_evaluation_pipeline/perturbations/canonical_clip_universal_attacks_full/
+/kaggle/input/datasets/alirezasalehy/adversarial-attacks-vlm-survey/
+├── canonical_clip_per_dataset/
+├── canonical_clip_per_category/
+└── canonical_clip_per_image/
 ```
 
-The archive is intentionally ignored by Git because it contains binary `.pt`
-files. `kaggle_new_anomalyclip.ipynb` first searches attached Kaggle datasets
-for the extracted directory and otherwise downloads this exact Drive file.
+Each directory contains `attack_manifest.csv`, `attack_train_indices.csv`,
+`evaluation_test_indices.csv`, and its `noises/` tree. The supported scopes are:
+
+- `per_dataset`: one perturbation shared by every attacked-label evaluation image
+  in the selected dataset;
+- `per_category`: one perturbation shared within a category;
+- `per_image`: one perturbation per attacked evaluation image, ordered exactly
+  as the matching rows in `evaluation_test_indices.csv`.
+
+Choose scopes and datasets independently in `EvaluationConfig`:
+
+```python
+config = EvaluationConfig(
+    artifacts_root="/kaggle/input/datasets/alirezasalehy/adversarial-attacks-vlm-survey",
+    attack_scopes=("per_category",),
+    source_datasets=("visa",),
+    target_datasets=("visa",),
+    attack_categories=None,       # or ("candle", "pcb1")
+    attack_directions=None,       # or ("normal_to_abnormal",)
+    attack_loss_modes=None,       # or ("global", "local", "combined")
+    # ...model, dataset, threshold, and output fields...
+)
+```
 
 For every record the runner verifies the serialized `.pt` SHA-256 checksum,
 tensor shape, finite values, and epsilon bound. It also checks that every fixed
-manifest ID exists in the mounted target dataset and that the attacked IDs are
-exactly the source-label subset of the evaluation cohort.
+CSV ID exists in the mounted target dataset and that attacked IDs are exactly
+the source-label subset of the declared evaluation cohort.
 
 ## AnomalyCLIP Kaggle notebook
 
@@ -61,14 +62,15 @@ The notebook independently:
 
 1. clones this experiment repository and the official AnomalyCLIP repository;
 2. installs `blackbox_evaluation_pipeline/requirements.txt`;
-3. locates or downloads the exact canonical archive;
-4. validates the manifest and dataset IDs;
+3. locates the attached canonical Kaggle dataset (it does not download attacks);
+4. validates the CSV manifests and dataset IDs;
 5. loads the appropriate AnomalyCLIP checkpoint for each target dataset;
 6. evaluates all currently available conditions and packages the results.
 
-`FULL_RUN=True` evaluates all manifest records. Setting it to `False` evaluates
-one complete condition as an integration check; it does not subsample the fixed
-evaluation cohort.
+Set `ATTACK_SCOPES`, `ATTACK_DATASETS`, and the optional category/direction/loss
+filters near the top of either evaluation notebook. `FULL_RUN=True` evaluates
+all matching records. Setting it to `False` evaluates one complete condition as
+an integration check; it does not subsample the fixed evaluation cohort.
 
 ## AnomalyCLIP decision thresholds
 
@@ -235,8 +237,9 @@ python -m blackbox_evaluation_pipeline.evaluate --config /path/to/config.json
 The JSON keys are the fields of `EvaluationConfig` in
 `universal_eval/runner.py`, including `model_kwargs_by_target` for target-
 dataset-specific checkpoints and `thresholds_by_target` for frozen per-target
-threshold JSON files. If thresholds are omitted, continuous metrics still run
-and threshold-dependent columns are omitted.
+threshold JSON files. The same scope, dataset, category, direction, and loss
+filters shown above are available in JSON. If thresholds are omitted,
+continuous metrics still run and threshold-dependent columns are omitted.
 
 For local validation:
 
@@ -263,5 +266,5 @@ blackbox_evaluation_pipeline/
 │   ├── datasets.py
 │   ├── metrics.py
 │   └── runner.py
-└── perturbations/                 # local extracted archive; Git-ignored
+└── tests/
 ```

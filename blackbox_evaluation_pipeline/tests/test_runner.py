@@ -17,8 +17,10 @@ from blackbox_evaluation_pipeline.universal_eval.adapters import (
 )
 from blackbox_evaluation_pipeline.universal_eval.runner import (
     EvaluationConfig,
+    _predict_adversarial,
     run_evaluation,
 )
+from blackbox_evaluation_pipeline.universal_eval.datasets import EvaluationSample
 
 
 @register_adapter("unit_test_adapter")
@@ -45,6 +47,44 @@ class UnitTestAdapter(ModelAdapter):
 
 
 class EndToEndRunnerTests(unittest.TestCase):
+    def test_per_image_deltas_are_matched_to_protocol_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            samples = []
+            for index in range(3):
+                image_path = root / f"{index:03d}.png"
+                Image.fromarray(np.zeros((4, 4, 3), dtype=np.uint8)).save(image_path)
+                samples.append(
+                    EvaluationSample(
+                        dataset="mvtec",
+                        category="toy",
+                        defect_type="good",
+                        image_path=image_path,
+                        mask_path=None,
+                        label=0,
+                    )
+                )
+            attacked = {samples[0].protocol_id, samples[2].protocol_id}
+            delta = torch.stack(
+                [torch.full((3, 4, 4), 0.01), torch.full((3, 4, 4), 0.03)]
+            )
+            predictions, linf = _predict_adversarial(
+                UnitTestAdapter(),
+                samples,
+                delta,
+                attacked,
+                {samples[0].protocol_id: 0, samples[2].protocol_id: 1},
+                image_size=4,
+                batch_size=3,
+                description="per-image-test",
+            )
+
+            self.assertAlmostEqual(predictions[samples[0].protocol_id][0], 0.01)
+            self.assertAlmostEqual(predictions[samples[1].protocol_id][0], 0.0)
+            self.assertAlmostEqual(predictions[samples[2].protocol_id][0], 0.03)
+            self.assertAlmostEqual(linf[samples[0].protocol_id], 0.01)
+            self.assertAlmostEqual(linf[samples[2].protocol_id], 0.03)
+
     def test_manifest_ids_drive_attack_and_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -60,33 +100,29 @@ class EndToEndRunnerTests(unittest.TestCase):
             mask_array[1:3, 1:3] = 255
             Image.fromarray(mask_array).save(mask)
 
-            artifacts = root / "canonical"
-            delta_path = artifacts / "visa_to_mvtec" / "all_categories.pt"
+            artifacts = root / "adversarial-attacks-vlm-survey"
+            bundle = artifacts / "canonical_clip_per_dataset"
+            delta_path = (
+                bundle / "noises" / "mvtec" / "f1" / "perturbations"
+                / "dataset__normal_to_abnormal__global.pt"
+            )
             delta_path.parent.mkdir(parents=True)
             torch.save({"delta": torch.full((1, 3, 4, 4), 0.02)}, delta_path)
             checksum = hashlib.sha256(delta_path.read_bytes()).hexdigest()
-            record = {
-                "source_dataset": "visa",
-                "target_dataset": "mvtec",
-                "direction": "normal_to_abnormal",
-                "loss_mode": "global",
-                "scope": "dataset",
-                "source_label": 0,
-                "target_label": 1,
-                "target_evaluation_all_count": 2,
-                "target_attacked_label_count": 1,
-                "target_evaluation_all_sample_ids": [
-                    "test/toy/good/000",
-                    "test/toy/crack/001",
-                ],
-                "target_attacked_sample_ids": ["test/toy/good/000"],
-                "artifact_path": "/kaggle/working/canonical/visa_to_mvtec/all_categories.pt",
-                "artifact_file_sha256": checksum,
-                "epsilon": 8 / 255,
-                "image_size": 4,
-            }
-            (artifacts / "all_canonical_attack_artifacts.json").write_text(
-                json.dumps([record]), encoding="utf-8"
+            (bundle / "attack_manifest.csv").write_text(
+                "scope,source_dataset,target_dataset,category,direction,source_label,"
+                "target_label,loss_mode,evaluation_attacked_image_count,noise_file,"
+                "noise_tensor_key,artifact_sha256,image_size,epsilon\n"
+                + "dataset,mvtec,mvtec,,normal_to_abnormal,0,1,global,1,"
+                + "noises/mvtec/f1/perturbations/dataset__normal_to_abnormal__global.pt,"
+                + f"delta,{checksum},4,{8 / 255}\n",
+                encoding="utf-8",
+            )
+            (bundle / "evaluation_test_indices.csv").write_text(
+                "protocol_id,dataset,category,label,partition\n"
+                "test/toy/good/000,mvtec,toy,0,evaluation\n"
+                "test/toy/crack/001,mvtec,toy,1,evaluation\n",
+                encoding="utf-8",
             )
             threshold_path = root / "thresholds" / "category_thresholds.json"
             threshold_path.parent.mkdir(parents=True)
@@ -147,7 +183,7 @@ class EndToEndRunnerTests(unittest.TestCase):
                 0.0,
             )
             prediction_path = output / "predictions" / (
-                "visa__mvtec__normal_to_abnormal__global__dataset.npz"
+                "mvtec__mvtec__normal_to_abnormal__global__per_dataset.npz"
             )
             with np.load(prediction_path, allow_pickle=False) as predictions:
                 self.assertEqual(
@@ -157,7 +193,7 @@ class EndToEndRunnerTests(unittest.TestCase):
                     predictions["adversarial_binary_predictions"].tolist(), [1, 1]
                 )
             sample_folder = qualitative_output / (
-                "visa__mvtec__normal_to_abnormal__global__dataset"
+                "mvtec__mvtec__normal_to_abnormal__global__per_dataset"
             ) / "strongest_success__test__toy__good__000"
             self.assertEqual(
                 {path.name for path in sample_folder.iterdir()},

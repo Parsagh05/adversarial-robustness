@@ -164,6 +164,7 @@ def export_representative_samples(
     clean_predictions: dict[str, Prediction],
     adversarial_predictions: dict[str, Prediction],
     delta: torch.Tensor,
+    delta_indices: dict[str, int],
     *,
     image_size: int,
     anomaly_map_sigma: float,
@@ -182,7 +183,9 @@ def export_representative_samples(
         sample_id = str(row["sample_id"])
         sample = samples_by_id[sample_id]
         clean_tensor = load_image(sample, image_size)
-        adversarial_tensor = (clean_tensor + delta[0]).clamp(0.0, 1.0)
+        adversarial_tensor = (
+            clean_tensor + delta[delta_indices[sample_id]]
+        ).clamp(0.0, 1.0)
         clean = clean_tensor.permute(1, 2, 0).numpy()
         adversarial = adversarial_tensor.permute(1, 2, 0).numpy()
         clean_map = resize_anomaly_maps(

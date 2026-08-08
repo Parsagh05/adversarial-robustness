@@ -1,4 +1,4 @@
-"""Shared, model-agnostic evaluation runner for fixed universal attacks."""
+"""Shared, model-agnostic evaluation runner for fixed canonical attacks."""
 
 from __future__ import annotations
 
@@ -54,6 +54,10 @@ class EvaluationConfig:
     qualitative_output_root: str | None = None
     source_datasets: tuple[str, ...] | None = None
     target_datasets: tuple[str, ...] | None = None
+    attack_scopes: tuple[str, ...] = ("per_dataset",)
+    attack_categories: tuple[str, ...] | None = None
+    attack_directions: tuple[str, ...] | None = None
+    attack_loss_modes: tuple[str, ...] | None = None
     condition_names: tuple[str, ...] | None = None
     max_conditions: int | None = None
     run_notes: str = ""
@@ -67,6 +71,8 @@ class EvaluationConfig:
             raise ValueError("aupro_fpr_limit must be in (0, 1]")
         if self.max_conditions is not None and self.max_conditions < 1:
             raise ValueError("max_conditions must be positive when supplied")
+        if not self.attack_scopes:
+            raise ValueError("attack_scopes must select at least one scope")
         if self.save_qualitative_samples and not self.qualitative_output_root:
             raise ValueError(
                 "qualitative_output_root is required when saving qualitative samples"
@@ -114,6 +120,7 @@ def _predict_adversarial(
     samples: list[EvaluationSample],
     delta: torch.Tensor,
     attacked_ids: set[str],
+    delta_indices: dict[str, int],
     *,
     image_size: int,
     batch_size: int,
@@ -121,7 +128,6 @@ def _predict_adversarial(
 ) -> tuple[dict[str, Prediction], dict[str, float]]:
     predictions: dict[str, Prediction] = {}
     actual_linf: dict[str, float] = {}
-    perturbation = delta[0]
     batches = list(_chunks(samples, batch_size))
     for batch in tqdm(batches, desc=description, leave=False):
         clean = torch.stack([load_image(sample, image_size) for sample in batch])
@@ -132,8 +138,11 @@ def _predict_adversarial(
             if sample.protocol_id in attacked_ids
         ]
         if attacked_indices:
+            perturbations = torch.stack(
+                [delta[delta_indices[batch[index].protocol_id]] for index in attacked_indices]
+            )
             adversarial[attacked_indices] = (
-                clean[attacked_indices] + perturbation
+                clean[attacked_indices] + perturbations
             ).clamp(0.0, 1.0)
         linf = (adversarial - clean).abs().flatten(1).amax(dim=1).numpy()
         scores, maps = adapter.predict_with_categories(
@@ -501,8 +510,12 @@ def run_evaluation(config: EvaluationConfig) -> Path:
         raise RuntimeError("CUDA was requested but is unavailable; enable a Kaggle GPU")
     artifacts = load_manifest(
         config.artifacts_root,
+        scopes=config.attack_scopes,
         sources=config.source_datasets,
         targets=config.target_datasets,
+        categories=config.attack_categories,
+        directions=config.attack_directions,
+        loss_modes=config.attack_loss_modes,
     )
     if config.condition_names is not None:
         selected = set(config.condition_names)
@@ -512,13 +525,6 @@ def run_evaluation(config: EvaluationConfig) -> Path:
             raise ValueError(f"Requested conditions not found in manifest: {sorted(missing)}")
     if config.max_conditions is not None:
         artifacts = artifacts[: config.max_conditions]
-    unsupported = [artifact.name for artifact in artifacts if artifact.record["scope"] != "dataset"]
-    if unsupported:
-        raise NotImplementedError(
-            "This runner currently accepts fixed dataset-universal tensors only; "
-            f"unsupported manifest records: {unsupported}"
-        )
-
     output = Path(config.output_root).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     (output / "run_config.json").write_text(
@@ -599,11 +605,13 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                 delta = artifact.load_delta(verify_checksum=config.verify_checksums)
                 evaluation = evaluations[artifact.name]
                 attacked_set = set(artifact.attacked_ids)
+                delta_indices = artifact.delta_indices()
                 adversarial_predictions, actual_linf = _predict_adversarial(
                     adapter,
                     evaluation,
                     delta,
                     attacked_set,
+                    delta_indices,
                     image_size=image_size,
                     batch_size=config.batch_size,
                     description=artifact.name,
@@ -646,6 +654,7 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                         clean_predictions,
                         adversarial_predictions,
                         delta,
+                        delta_indices,
                         image_size=image_size,
                         anomaly_map_sigma=config.anomaly_map_sigma,
                     )
