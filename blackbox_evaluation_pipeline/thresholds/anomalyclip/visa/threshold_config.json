@@ -1,0 +1,40 @@
+{
+  "output_root": "/kaggle/working/f1_optimal_thresholds/anomalyclip",
+  "model_name": "anomalyclip",
+  "model_kwargs_by_target": {
+    "mvtec": {
+      "repository_root": "/kaggle/working/AnomalyCLIP",
+      "checkpoint_path": "/kaggle/working/AnomalyCLIP/checkpoints/9_12_4_multiscale/epoch_15.pth",
+      "clip_download_root": "/kaggle/working/clip_cache"
+    },
+    "visa": {
+      "repository_root": "/kaggle/working/AnomalyCLIP",
+      "checkpoint_path": "/kaggle/working/AnomalyCLIP/checkpoints/9_12_4_multiscale_visa/epoch_15.pth",
+      "clip_download_root": "/kaggle/working/clip_cache"
+    }
+  },
+  "datasets": [
+    "mvtec",
+    "visa"
+  ],
+  "mvtec_root": "/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection",
+  "visa_root": "/kaggle/input/datasets/alirezasalehy/visa-ad/VisA_20220922",
+  "device": "cuda",
+  "batch_size": 2,
+  "image_size": 518,
+  "evaluation_index_path": "/kaggle/working/adversarial-robustness/blackbox_evaluation_pipeline/dataset_csv/evaluation_test_indices.csv",
+  "provenance": "clean_evaluation_f1_optimal_following_crane",
+  "official_model_threshold": false,
+  "run_metadata": {
+    "repository": "https://github.com/zqhang/AnomalyCLIP.git",
+    "commit": "3911738c0867544f545a076ad78f3f11d9ecbfdf",
+    "zero_shot_mapping": {
+      "mvtec": "AnomalyCLIP MVTec target checkpoint",
+      "visa": "AnomalyCLIP VisA target checkpoint"
+    },
+    "threshold_selection": "maximize image F1 on fixed clean evaluation IDs",
+    "threshold_scope": "model x dataset x category",
+    "frozen_for_adversarial_threshold_metrics": true
+  },
+  "calibrated_dataset": "visa"
+}

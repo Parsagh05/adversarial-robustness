@@ -95,8 +95,10 @@ The notebook packages all selected models under
 contains `category_thresholds.json`, `clean_evaluation_scores.npz`, and
 `threshold_config.json`.
 
-Publish or attach that combined output once. Both evaluation notebooks select
-their own model/dataset artifact. The clean optimal threshold is frozen for
+The verified generated artifacts are committed under
+`blackbox_evaluation_pipeline/thresholds/<model>/<dataset>/`. Both evaluation
+notebooks prefer these committed files and use an attached Kaggle threshold
+dataset only as a fallback. The clean optimal threshold is frozen for
 adversarial accuracy, flip rate, targeted success, FPR, FNR, and qualitative
 selection. Adversarial samples are never used to retune those binary decisions.
 Recalibrate when the checkpoint, preprocessing, image size, fixed cohort, or
@@ -112,8 +114,9 @@ follows the zero-shot protocol: MVTec uses `TrainOnVisA`, and VisA uses
 `TrainOnMVTec`; an available `text_adapter.pth` is loaded alongside the required
 `image_adapter.pth`.
 
-Run the threshold notebook first, publish or attach its `f1_optimal_thresholds`
-output as a Kaggle dataset, then run the evaluation notebook. The model adapter
+The evaluation notebook uses the committed `f1_optimal_thresholds` artifacts.
+Run the threshold notebook only when regenerating them after a checkpoint,
+preprocessing, score implementation, or evaluation-cohort change. The model adapter
 uses the official category-specific prompts and paper defaults: ViT-L/14@336px,
 518-pixel inputs, seed 111, residual adapter weights 0.1, adaptation depths 3
 and 6, feature levels 6/12/18/24, and the default CLI behavior with ReLU off.
