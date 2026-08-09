@@ -84,9 +84,9 @@ The official clean benchmark reports continuous AUROC, AP, pixel AUROC, and
 AUPRO, so there is no official MVTec or VisA numeric threshold to export.
 
 Run the single multi-model notebook
-[`kaggle_new_thresholds.ipynb`](kaggle_new_thresholds.ipynb) before either
+[`kaggle_new_thresholds.ipynb`](kaggle_new_thresholds.ipynb) before any
 evaluation notebook. Set `MODELS` to any configured subset, such as
-`("anomalyclip", "aaclip")`. For every model, dataset, and category, it runs
+`("anomalyclip", "aaclip", "filo", "afclip")`. For every model, dataset, and category, it runs
 clean inference on the fixed IDs in
 `dataset_csv/canonical_clip_per_dataset/evaluation_test_indices.csv`
 and selects the image-score threshold that maximizes F1. This follows the
@@ -100,7 +100,7 @@ contains `category_thresholds.json`, `clean_evaluation_scores.npz`, and
 `threshold_config.json`.
 
 The verified generated artifacts are committed under
-`blackbox_evaluation_pipeline/thresholds/<model>/<dataset>/`. Both evaluation
+`blackbox_evaluation_pipeline/thresholds/<model>/<dataset>/`. The evaluation
 notebooks prefer these committed files and use an attached Kaggle threshold
 dataset only as a fallback. The clean optimal threshold is frozen for
 adversarial accuracy, flip rate, targeted success, FPR, FNR, and qualitative
@@ -125,6 +125,23 @@ uses the official category-specific prompts and paper defaults: ViT-L/14@336px,
 518-pixel inputs, seed 111, residual adapter weights 0.1, adaptation depths 3
 and 6, feature levels 6/12/18/24, and the default CLI behavior with ReLU off.
 The OpenAI base checkpoint is checksum-verified before use.
+
+## FiLo and AF-CLIP Kaggle notebooks
+
+[`kaggle_new_filo.ipynb`](kaggle_new_filo.ipynb) and
+[`kaggle_new_afclip.ipynb`](kaggle_new_afclip.ipynb) use the same fixed-ID,
+manifest-driven evaluation and output layout as the existing model notebooks.
+Both upstream implementations were admitted only after verifying their released
+defaults use OpenAI ViT-L/14@336px: FiLo names it `ViT-L-14-336`, while AF-CLIP
+names it `ViT-L/14@336px`.
+
+FiLo downloads the four released checkpoints linked by its repository from
+`FantasticGNU/FiLo`. MVTec uses the FiLo and Grounding DINO weights trained on
+VisA; VisA uses both weights trained on MVTec. AF-CLIP uses the prompt and
+adaptor files committed under its `weight/` directory with the same
+opposite-dataset mapping. Both adapters reject a different backbone explicitly.
+The multi-model threshold notebook contains the same repository, checkpoint,
+and zero-shot configuration for both additions.
 
 ## Outputs
 
@@ -267,6 +284,8 @@ python -m pytest
 blackbox_evaluation_pipeline/
 ├── kaggle_new_anomalyclip.ipynb
 ├── kaggle_new_aaclip.ipynb
+├── kaggle_new_filo.ipynb
+├── kaggle_new_afclip.ipynb
 ├── kaggle_new_thresholds.ipynb
 ├── calculate_dataset_perturbations.ipynb
 ├── OFFICIAL_THRESHOLD_REVIEW.md
