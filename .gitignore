@@ -83,3 +83,7 @@ dist/
 # Version-controlled calibration artifacts preserved with the old benchmark
 !attack_generation_pipeline/thresholds/
 !attack_generation_pipeline/thresholds/**
+
+# Keep verified black-box threshold artifacts
+!blackbox_evaluation_pipeline/thresholds/**/category_thresholds.json
+!blackbox_evaluation_pipeline/thresholds/**/clean_evaluation_scores.npz
