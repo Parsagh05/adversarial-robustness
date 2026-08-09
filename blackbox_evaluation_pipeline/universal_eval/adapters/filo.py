@@ -48,9 +48,13 @@ def _prepare_import(repository_root: str | Path):
             f"Expected the official FiLo repository at {root}; missing: {missing}"
         )
     root_string = str(root)
-    if root_string in sys.path:
-        sys.path.remove(root_string)
-    sys.path.insert(0, root_string)
+    grounding_root_string = str(root / "models" / "GroundingDINO")
+    # FiLo imports Grounding DINO both as ``models.GroundingDINO`` and through
+    # its own absolute ``groundingdino`` imports. Expose both official roots.
+    for import_root in (root_string, grounding_root_string):
+        if import_root in sys.path:
+            sys.path.remove(import_root)
+        sys.path.insert(0, import_root)
     importlib.invalidate_caches()
 
     # FiLo uses the generic top-level package name ``models``.
