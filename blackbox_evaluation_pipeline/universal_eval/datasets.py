@@ -235,6 +235,13 @@ def index_samples(samples: Iterable[EvaluationSample]) -> dict[str, EvaluationSa
 
 
 def load_image(sample: EvaluationSample, size: int) -> torch.Tensor:
+    """Load into the benchmark's shared square attack coordinate system.
+
+    Direct square resizing is intentional: clean inputs, canonical adversarial
+    tensors, masks, and evaluated anomaly maps must remain pixel-aligned. This
+    can differ from a target model's native aspect-ratio-preserving resize/crop
+    on non-square source images and is a blackbox protocol constraint.
+    """
     array = np.asarray(Image.open(sample.image_path).convert("RGB"), dtype=np.float32)
     tensor = torch.from_numpy(array / 255.0).permute(2, 0, 1).unsqueeze(0)
     tensor = F.interpolate(

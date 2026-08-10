@@ -86,7 +86,7 @@ AUPRO, so there is no official MVTec or VisA numeric threshold to export.
 Run the single multi-model notebook
 [`kaggle_new_thresholds.ipynb`](kaggle_new_thresholds.ipynb) before any
 evaluation notebook. Set `MODELS` to any configured subset, such as
-`("anomalyclip", "aaclip", "filo", "afclip")`. For every model, dataset, and category, it runs
+`("anomalyclip", "aaclip", "filo", "afclip", "aprilgan")`. For every model, dataset, and category, it runs
 clean inference on the fixed IDs in
 `dataset_csv/canonical_clip_per_dataset/evaluation_test_indices.csv`
 and selects the image-score threshold that maximizes F1. This follows the
@@ -142,6 +142,30 @@ adaptor files committed under its `weight/` directory with the same
 opposite-dataset mapping. Both adapters reject a different backbone explicitly.
 The multi-model threshold notebook contains the same repository, checkpoint,
 and zero-shot configuration for both additions.
+
+## APRIL-GAN Kaggle notebook
+
+[`kaggle_new_aprilgan.ipynb`](kaggle_new_aprilgan.ipynb) reproduces the same
+fixed-ID threshold and black-box evaluation workflows with the official
+`ByChelsea/VAND-APRIL-GAN` implementation. Its released zero-shot script was
+verified to use OpenAI `ViT-L-14-336` (ViT-L/14@336px), 518-pixel inputs, and
+feature layers 6/12/18/24. MVTec uses the released `visa_pretrained.pth`, and
+VisA uses `mvtec_pretrained.pth`, matching the official cross-dataset commands.
+The repository commit and OpenAI base-model checksum are pinned in both Kaggle
+notebooks.
+
+APRIL-GAN anomaly maps are evaluated without Gaussian smoothing, matching the
+official zero-shot implementation. The blackbox benchmark intentionally uses a
+shared direct resize to a 518x518 square coordinate system instead of each
+model's native aspect-ratio-preserving resize/crop. The same geometry is used
+for clean images, adversarial tensors, ground-truth masks, and evaluated anomaly
+maps so pixel correspondence is preserved. Consequently, results on non-square
+source images are blackbox-protocol results and are not preprocessing-identical
+to APRIL-GAN's official OpenCLIP evaluation.
+
+Tipsomaly was intentionally not integrated. Its official implementation uses
+the distinct TIPS `l14h` backbone and TIPS component checkpoints rather than a
+CLIP ViT-L/14@336px backbone, so it does not pass the requested backbone gate.
 
 ## Outputs
 
@@ -286,6 +310,7 @@ blackbox_evaluation_pipeline/
 ├── kaggle_new_aaclip.ipynb
 ├── kaggle_new_filo.ipynb
 ├── kaggle_new_afclip.ipynb
+├── kaggle_new_aprilgan.ipynb
 ├── kaggle_new_thresholds.ipynb
 ├── calculate_dataset_perturbations.ipynb
 ├── OFFICIAL_THRESHOLD_REVIEW.md
