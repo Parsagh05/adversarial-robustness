@@ -179,6 +179,17 @@ class EndToEndRunnerTests(unittest.TestCase):
                 "1",
             )
             self.assertEqual(per_image["test/toy/good/000"]["attack_flipped"], "1")
+            self.assertEqual(per_image["test/toy/crack/001"]["score_shift"], "0.0")
+            self.assertEqual(
+                per_image["test/toy/crack/001"]["map_directional_mean_shift"],
+                "0.0",
+            )
+            self.assertEqual(
+                per_image["test/toy/crack/001"][
+                    "map_directional_pixel_fraction"
+                ],
+                "0.0",
+            )
             self.assertGreater(
                 float(per_image["test/toy/good/000"]["directional_score_shift"]),
                 0.0,

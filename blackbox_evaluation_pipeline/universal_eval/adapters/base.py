@@ -41,6 +41,34 @@ class ModelAdapter(ABC):
         del map_mins, map_maxs, categories
         return scores
 
+    def postprocess_image_scores_with_reference(
+        self,
+        scores: np.ndarray,
+        map_mins: np.ndarray,
+        map_maxs: np.ndarray,
+        categories: Sequence[str],
+        *,
+        reference_scores: np.ndarray,
+        reference_map_mins: np.ndarray,
+        reference_map_maxs: np.ndarray,
+        reference_categories: Sequence[str],
+    ) -> np.ndarray:
+        """Postprocess scores using statistics fitted on a clean reference cohort.
+
+        Most adapters do not perform cohort-level score normalization, so their
+        reference inputs are immaterial. Adapters that do normalize over a split
+        must override this method to keep clean-derived statistics frozen when
+        processing adversarial scores.
+        """
+
+        del (
+            reference_scores,
+            reference_map_mins,
+            reference_map_maxs,
+            reference_categories,
+        )
+        return self.postprocess_image_scores(scores, map_mins, map_maxs, categories)
+
     @abstractmethod
     def release(self) -> None:
         """Release model resources."""

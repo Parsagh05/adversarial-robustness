@@ -236,6 +236,31 @@ class AACLIPAdapter(ModelAdapter):
     ) -> np.ndarray:
         """Reproduce official metrics_eval image-score aggregation per category."""
 
+        return self.postprocess_image_scores_with_reference(
+            scores,
+            map_mins,
+            map_maxs,
+            categories,
+            reference_scores=scores,
+            reference_map_mins=map_mins,
+            reference_map_maxs=map_maxs,
+            reference_categories=categories,
+        )
+
+    def postprocess_image_scores_with_reference(
+        self,
+        scores: np.ndarray,
+        map_mins: np.ndarray,
+        map_maxs: np.ndarray,
+        categories: Sequence[str],
+        *,
+        reference_scores: np.ndarray,
+        reference_map_mins: np.ndarray,
+        reference_map_maxs: np.ndarray,
+        reference_categories: Sequence[str],
+    ) -> np.ndarray:
+        """Aggregate AA-CLIP scores with normalization frozen on clean data."""
+
         result = np.asarray(scores, dtype=np.float64).copy()
         map_mins = np.asarray(map_mins, dtype=np.float64)
         map_maxs = np.asarray(map_maxs, dtype=np.float64)
@@ -245,23 +270,42 @@ class AACLIPAdapter(ModelAdapter):
         ):
             raise ValueError("AA-CLIP score postprocessing inputs must have matching shapes")
 
+        reference_scores = np.asarray(reference_scores, dtype=np.float64)
+        reference_map_mins = np.asarray(reference_map_mins, dtype=np.float64)
+        reference_map_maxs = np.asarray(reference_map_maxs, dtype=np.float64)
+        reference_categories_array = np.asarray(reference_categories)
+        if not (
+            reference_scores.shape
+            == reference_map_mins.shape
+            == reference_map_maxs.shape
+            == reference_categories_array.shape
+        ):
+            raise ValueError("AA-CLIP reference score inputs must have matching shapes")
+
         for category in dict.fromkeys(categories):
             selected = categories_array == category
             category_scores = result[selected]
             category_map_maxs = map_maxs[selected]
-            pixel_min = float(map_mins[selected].min())
-            pixel_max = float(category_map_maxs.max())
+            reference_selected = reference_categories_array == category
+            if not reference_selected.any():
+                raise ValueError(
+                    f"Clean AA-CLIP reference cohort has no {category!r} samples"
+                )
+            reference_category_scores = reference_scores[reference_selected]
+            pixel_min = float(reference_map_mins[reference_selected].min())
+            pixel_max = float(reference_map_maxs[reference_selected].max())
 
-            # Match the conditionals and operations in official forward_utils.metrics_eval.
+            # Match official metrics_eval for clean calibration, then reuse those
+            # clean-derived affine parameters for every adversarial condition.
             if pixel_max != 1.0:
                 if pixel_max == pixel_min:
                     raise ValueError(f"Constant AA-CLIP anomaly maps for {category!r}")
                 category_map_maxs = (
                     category_map_maxs - pixel_min
                 ) / (pixel_max - pixel_min)
-            if float(category_scores.max()) != 1.0:
-                score_min = float(category_scores.min())
-                score_max = float(category_scores.max())
+            if float(reference_category_scores.max()) != 1.0:
+                score_min = float(reference_category_scores.min())
+                score_max = float(reference_category_scores.max())
                 if score_max == score_min:
                     raise ValueError(f"Constant AA-CLIP image scores for {category!r}")
                 category_scores = (

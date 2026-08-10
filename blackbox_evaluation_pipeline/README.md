@@ -126,6 +126,13 @@ uses the official category-specific prompts and paper defaults: ViT-L/14@336px,
 and 6, feature levels 6/12/18/24, and the default CLI behavior with ReLU off.
 The OpenAI base checkpoint is checksum-verified before use.
 
+AA-CLIP's official category-level aggregation min-max normalizes image scores
+and anomaly-map maxima over a cohort. Clean evaluation fits those parameters;
+the adversarial evaluator freezes and reuses them for every condition. Samples
+that do not receive a perturbation also reuse their cached clean predictions
+exactly. This prevents attacked samples from indirectly rescaling or flipping
+untouched controls.
+
 ## FiLo and AF-CLIP Kaggle notebooks
 
 [`kaggle_new_filo.ipynb`](kaggle_new_filo.ipynb) and

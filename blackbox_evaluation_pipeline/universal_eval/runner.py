@@ -166,17 +166,50 @@ def _postprocess_prediction_scores(
     adapter: Any,
     samples: list[EvaluationSample],
     predictions: dict[str, Prediction],
+    *,
+    reference_samples: list[EvaluationSample] | None = None,
+    reference_predictions: dict[str, Prediction] | None = None,
 ) -> dict[str, Prediction]:
     scores = np.asarray(
         [predictions[sample.protocol_id][0] for sample in samples], dtype=np.float32
     )
     maps = [predictions[sample.protocol_id][1] for sample in samples]
-    processed = adapter.postprocess_image_scores(
-        scores,
-        np.asarray([float(anomaly_map.min()) for anomaly_map in maps]),
-        np.asarray([float(anomaly_map.max()) for anomaly_map in maps]),
-        [sample.category for sample in samples],
-    )
+    map_mins = np.asarray([float(anomaly_map.min()) for anomaly_map in maps])
+    map_maxs = np.asarray([float(anomaly_map.max()) for anomaly_map in maps])
+    categories = [sample.category for sample in samples]
+    if (reference_samples is None) != (reference_predictions is None):
+        raise ValueError(
+            "reference_samples and reference_predictions must be supplied together"
+        )
+    if reference_samples is None or reference_predictions is None:
+        processed = adapter.postprocess_image_scores(
+            scores, map_mins, map_maxs, categories
+        )
+    else:
+        reference_maps = [
+            reference_predictions[sample.protocol_id][1]
+            for sample in reference_samples
+        ]
+        processed = adapter.postprocess_image_scores_with_reference(
+            scores,
+            map_mins,
+            map_maxs,
+            categories,
+            reference_scores=np.asarray(
+                [
+                    reference_predictions[sample.protocol_id][0]
+                    for sample in reference_samples
+                ],
+                dtype=np.float32,
+            ),
+            reference_map_mins=np.asarray(
+                [float(anomaly_map.min()) for anomaly_map in reference_maps]
+            ),
+            reference_map_maxs=np.asarray(
+                [float(anomaly_map.max()) for anomaly_map in reference_maps]
+            ),
+            reference_categories=[sample.category for sample in reference_samples],
+        )
     if processed.shape != scores.shape or not np.isfinite(processed).all():
         raise ValueError("Postprocessed image scores must be finite and one per sample")
     return {
@@ -634,7 +667,7 @@ def run_evaluation(config: EvaluationConfig) -> Path:
         print(f"[model] Loading {config.model_name} for target={target_dataset}")
         adapter = build_adapter(config.model_name, **kwargs)
         try:
-            clean_predictions = _predict_clean(
+            raw_clean_predictions = _predict_clean(
                 adapter,
                 clean_samples,
                 image_size=image_size,
@@ -642,7 +675,7 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                 description=f"clean {target_dataset}",
             )
             clean_predictions = _postprocess_prediction_scores(
-                adapter, clean_samples, clean_predictions
+                adapter, clean_samples, raw_clean_predictions
             )
             for artifact in target_artifacts:
                 print(f"[condition] {artifact.name}")
@@ -660,8 +693,20 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                     batch_size=config.batch_size,
                     description=artifact.name,
                 )
+                # The opposite-label cohort receives no perturbation. Reuse its
+                # cached clean output exactly instead of allowing batch-shape or
+                # cohort-normalization effects to create false control changes.
+                for sample in evaluation:
+                    if sample.protocol_id not in attacked_set:
+                        adversarial_predictions[sample.protocol_id] = (
+                            raw_clean_predictions[sample.protocol_id]
+                        )
                 adversarial_predictions = _postprocess_prediction_scores(
-                    adapter, evaluation, adversarial_predictions
+                    adapter,
+                    evaluation,
+                    adversarial_predictions,
+                    reference_samples=evaluation,
+                    reference_predictions=raw_clean_predictions,
                 )
 
                 grouped: dict[str, list[EvaluationSample]] = {}
