@@ -1,0 +1,50 @@
+{
+  "output_root": "/kaggle/working/f1_optimal_thresholds/aprilgan",
+  "model_name": "aprilgan",
+  "model_kwargs_by_target": {
+    "mvtec": {
+      "repository_root": "/kaggle/working/VAND-APRIL-GAN",
+      "checkpoint_path": "/kaggle/working/VAND-APRIL-GAN/exps/pretrained/visa_pretrained.pth",
+      "clip_cache_dir": "/kaggle/working/clip_336_cache"
+    },
+    "visa": {
+      "repository_root": "/kaggle/working/VAND-APRIL-GAN",
+      "checkpoint_path": "/kaggle/working/VAND-APRIL-GAN/exps/pretrained/mvtec_pretrained.pth",
+      "clip_cache_dir": "/kaggle/working/clip_336_cache"
+    }
+  },
+  "datasets": [
+    "mvtec",
+    "visa"
+  ],
+  "mvtec_root": "/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection",
+  "visa_root": "/kaggle/input/datasets/alirezasalehy/visa-ad/VisA_20220922",
+  "device": "cuda",
+  "batch_size": 2,
+  "image_size": 518,
+  "evaluation_index_path": "/kaggle/working/adversarial-robustness/blackbox_evaluation_pipeline/dataset_csv/canonical_clip_per_dataset/evaluation_test_indices.csv",
+  "provenance": "clean_evaluation_f1_optimal_following_crane",
+  "official_model_threshold": false,
+  "run_metadata": {
+    "repository": "https://github.com/ByChelsea/VAND-APRIL-GAN.git",
+    "commit": "f13b8a634e04f9fde8fa03db125b25af5695d8e1",
+    "backbone": "OpenAI ViT-L/14@336px",
+    "features": [
+      6,
+      12,
+      18,
+      24
+    ],
+    "image_size": 518,
+    "preprocessing_protocol": "direct 518x518 square resize for canonical attack/mask alignment",
+    "anomaly_map_postprocessing": "no Gaussian smoothing in evaluation",
+    "zero_shot_mapping": {
+      "mvtec": "visa_pretrained.pth (TrainOnVisA)",
+      "visa": "mvtec_pretrained.pth (TrainOnMVTec)"
+    },
+    "threshold_selection": "maximize image F1 on fixed clean evaluation IDs",
+    "threshold_scope": "model x dataset x category",
+    "frozen_for_adversarial_threshold_metrics": true
+  },
+  "calibrated_dataset": "mvtec"
+}
