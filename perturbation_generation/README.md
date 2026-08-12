@@ -68,11 +68,20 @@ The three modes can be selected independently with `RUN_PER_DATASET`,
 one scope per session. Existing `.pt` files are safely resumed only when every
 reproducibility field matches.
 
+Use `GENERATION_DATASETS=mvtec` or `GENERATION_DATASETS=visa` to split the two
+collections across sessions. In the Kaggle notebook, set `DATASETS =
+('mvtec',)` or `('visa',)`. Each selection uses a separate output/protocol
+directory, preventing a split generated for one selection from being reused by
+another.
+
 ## Outputs
 
 - `canonical_clip_per_dataset_segmentation_loss_v2.zip`
 - `canonical_clip_per_category_segmentation_loss_v2.zip`
 - `canonical_clip_per_image_segmentation_loss_v2.zip`
+
+Single-dataset runs insert `_mvtec` or `_visa` before
+`_segmentation_loss_v2.zip`, so independently generated archives never collide.
 
 Do not merge these archives with the old `canonical_clip_*` bundles under the
 same dataset version. Publish them as a new Kaggle dataset version and rerun the

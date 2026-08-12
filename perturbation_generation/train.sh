@@ -28,12 +28,16 @@ export PER_CATEGORY_DIAGNOSTIC_MAX_SAMPLES="$DIAGNOSTIC_MAX_SAMPLES"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export PYTHONUNBUFFERED=1
 
-for name in MVTEC_ROOT VISA_ROOT OUTPUT_BASE; do
+for name in OUTPUT_BASE; do
   value="${!name}"
   [[ "$value" != /ABSOLUTE/PATH/TO/* ]] || { echo "Edit $name in config.sh" >&2; exit 2; }
 done
-[[ -d "$MVTEC_ROOT" ]] || { echo "Missing MVTec directory: $MVTEC_ROOT" >&2; exit 2; }
-[[ -d "$VISA_ROOT" ]] || { echo "Missing VisA directory: $VISA_ROOT" >&2; exit 2; }
+case ",$GENERATION_DATASETS," in
+  *,mvtec,*) [[ -d "$MVTEC_ROOT" ]] || { echo "Missing MVTec directory: $MVTEC_ROOT" >&2; exit 2; } ;;
+esac
+case ",$GENERATION_DATASETS," in
+  *,visa,*) [[ -d "$VISA_ROOT" ]] || { echo "Missing VisA directory: $VISA_ROOT" >&2; exit 2; } ;;
+esac
 mkdir -p "$WORK_DIR" "$OUTPUT_BASE/logs"
 
 PYTHON="${PYTHON_BIN:-python3}"

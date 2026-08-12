@@ -42,6 +42,16 @@ def csv_tuple(name: str, default: str) -> tuple[str, ...]:
     return tuple(x.strip() for x in os.environ.get(name, default).split(",") if x.strip())
 
 
+def generation_datasets() -> tuple[str, ...]:
+    datasets = csv_tuple("GENERATION_DATASETS", "mvtec,visa")
+    if not datasets or len(set(datasets)) != len(datasets):
+        raise ValueError("GENERATION_DATASETS must contain unique dataset names")
+    unknown = sorted(set(datasets) - {"mvtec", "visa"})
+    if unknown:
+        raise ValueError(f"Unknown GENERATION_DATASETS values: {unknown}")
+    return datasets
+
+
 def parse_numeric(raw: str) -> float:
     """Parse a decimal or one division expression without using ``eval``.
 
@@ -158,12 +168,21 @@ def prepare_protocol_split() -> None:
 
     split_seed = int(os.environ.get("SPLIT_SEED", "111"))
     evaluation_fraction = float(os.environ.get("EVALUATION_FRACTION", "0.50"))
+    datasets = generation_datasets()
+    discovery_mode = datasets[0] if len(datasets) == 1 else "both"
     if not (0.0 < evaluation_fraction < 1.0):
         raise ValueError("EVALUATION_FRACTION must be between 0 and 1")
 
     PROTOCOL_DIR.mkdir(parents=True, exist_ok=True)
     if ATTACK_TRAIN_CSV.is_file() and EVALUATION_CSV.is_file():
         train, evaluation = load_protocol()
+        stored_datasets = set(pd.concat([train, evaluation]).dataset.astype(str))
+        if stored_datasets != set(datasets):
+            raise RuntimeError(
+                "Existing protocol CSVs use datasets "
+                f"{sorted(stored_datasets)}, requested {sorted(datasets)}. "
+                "Use a dataset-specific OUTPUT_BASE."
+            )
         stored_seed = set(pd.concat([train, evaluation]).split_seed.astype(int))
         stored_fraction = set(pd.concat([train, evaluation]).evaluation_fraction.astype(float))
         if stored_seed != {split_seed} or len(stored_fraction) != 1 or abs(next(iter(stored_fraction)) - evaluation_fraction) > 1e-12:
@@ -175,9 +194,9 @@ def prepare_protocol_split() -> None:
         return
 
     samples = discover_anomaly_datasets(
-        dataset="both",
-        mvtec_root=str(MVTEC_ROOT),
-        visa_root=str(VISA_ROOT),
+        dataset=discovery_mode,
+        mvtec_root=str(MVTEC_ROOT) if "mvtec" in datasets else None,
+        visa_root=str(VISA_ROOT) if "visa" in datasets else None,
         categories=None,
         max_samples_per_category=None,
         train_normal=False,

@@ -54,6 +54,7 @@ from common import (
     assert_partition_disjoint,
     bind_discovered_samples_from_partition_csvs,
     fraction_tag,
+    generation_datasets,
     parse_fraction_list,
     parse_numeric,
     select_attack_train_fraction,
@@ -124,7 +125,8 @@ TRAIN_FRACTIONS = parse_fraction_list(
 )
 DIRECTIONS = csv_tuple("DIRECTIONS", "normal_to_abnormal,abnormal_to_normal")
 LOSS_MODES = csv_tuple("LOSS_MODES", "global,local,combined")
-DATASETS = ("mvtec", "visa")
+DATASETS = generation_datasets()
+DISCOVERY_MODE = DATASETS[0] if len(DATASETS) == 1 else "both"
 
 if set(DIRECTIONS) != {"normal_to_abnormal", "abnormal_to_normal"}:
     raise ValueError(f"Unexpected DIRECTIONS: {DIRECTIONS}")
@@ -144,9 +146,9 @@ print("Expected optimization runs:", len(DATASETS) * len(TRAIN_FRACTIONS) * len(
 print("Important: each source delta is optimized once and referenced by both target datasets.")
 
 all_discovered = discover_anomaly_datasets(
-    dataset="both",
-    mvtec_root=str(MVTEC_ROOT),
-    visa_root=str(VISA_ROOT),
+    dataset=DISCOVERY_MODE,
+    mvtec_root=str(MVTEC_ROOT) if "mvtec" in DATASETS else None,
+    visa_root=str(VISA_ROOT) if "visa" in DATASETS else None,
     categories=None,
     max_samples_per_category=None,
     train_normal=False,
@@ -479,7 +481,10 @@ pd.DataFrame([
     for row in artifact_rows
 ]).to_csv(diagnostics_path, index=False)
 
-archive_path = OUTPUT_BASE / "canonical_clip_per_dataset_segmentation_loss_v2.zip"
+dataset_archive_tag = "" if len(DATASETS) > 1 else f"_{DATASETS[0]}"
+archive_path = OUTPUT_BASE / (
+    f"canonical_clip_per_dataset{dataset_archive_tag}_segmentation_loss_v2.zip"
+)
 if archive_path.exists():
     archive_path.unlink()
 protocol_files = [ATTACK_TRAIN_CSV, EVALUATION_CSV]

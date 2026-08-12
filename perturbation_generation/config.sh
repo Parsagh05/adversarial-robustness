@@ -16,6 +16,10 @@ EVALUATION_FRACTION="${EVALUATION_FRACTION:-0.50}"
 # Later change it to 0.05, 0.10, 0.25, 0.50, or 1.00 for data-efficiency.
 ATTACK_TRAIN_FRACTION="${ATTACK_TRAIN_FRACTION:-1.00}"
 
+# Comma-separated subset to generate. Use mvtec or visa to split long Kaggle
+# runs across sessions; the default preserves the complete two-dataset run.
+GENERATION_DATASETS="${GENERATION_DATASETS:-mvtec,visa}"
+
 RUN_PER_DATASET="${RUN_PER_DATASET:-true}"
 RUN_PER_CATEGORY="${RUN_PER_CATEGORY:-true}"
 RUN_PER_IMAGE="${RUN_PER_IMAGE:-true}"

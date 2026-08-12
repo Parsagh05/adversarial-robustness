@@ -50,6 +50,7 @@ from adversarial_harness.models import CLIPSurrogate
 from common import (
     assert_partition_disjoint,
     bind_discovered_samples_from_partition_csvs,
+    generation_datasets,
     parse_numeric,
     sha256_file,
     split_sha256,
@@ -122,7 +123,8 @@ CACHE_INPUTS_IN_RAM = bool_env("CACHE_INPUTS_IN_RAM", True)
 AUTO_REDUCE_MICRO_BATCH_ON_OOM = True
 DIRECTIONS = csv_tuple("DIRECTIONS", "normal_to_abnormal,abnormal_to_normal")
 LOSS_MODES = csv_tuple("LOSS_MODES", "global,local,combined")
-DATASETS = ("mvtec", "visa")
+DATASETS = generation_datasets()
+DISCOVERY_MODE = DATASETS[0] if len(DATASETS) == 1 else "both"
 
 if not (0.0 < EVALUATION_FRACTION <= 1.0):
     raise ValueError("PER_IMAGE_EVALUATION_FRACTION must be in (0,1]")
@@ -155,9 +157,9 @@ print("Evaluation fraction:", EVALUATION_FRACTION)
 print("Per-image uses zero attack_train images; each delta sees exactly its aligned evaluation image.")
 
 all_discovered = discover_anomaly_datasets(
-    dataset="both",
-    mvtec_root=str(MVTEC_ROOT),
-    visa_root=str(VISA_ROOT),
+    dataset=DISCOVERY_MODE,
+    mvtec_root=str(MVTEC_ROOT) if "mvtec" in DATASETS else None,
+    visa_root=str(VISA_ROOT) if "visa" in DATASETS else None,
     categories=None,
     max_samples_per_category=None,
     train_normal=False,
@@ -542,7 +544,10 @@ pd.DataFrame([
     }
     for row in artifact_rows
 ]).to_csv(diagnostics_path, index=False)
-archive_path = OUTPUT_BASE / "canonical_clip_per_image_segmentation_loss_v2.zip"
+dataset_archive_tag = "" if len(DATASETS) > 1 else f"_{DATASETS[0]}"
+archive_path = OUTPUT_BASE / (
+    f"canonical_clip_per_image{dataset_archive_tag}_segmentation_loss_v2.zip"
+)
 if archive_path.exists():
     archive_path.unlink()
 with zipfile.ZipFile(archive_path, "w", allowZip64=True) as archive:
