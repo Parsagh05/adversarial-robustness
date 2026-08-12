@@ -36,9 +36,8 @@ VISA_ROOT = Path(os.environ["VISA_ROOT"]).expanduser().resolve()
 ATTACK_TRAIN_CSV = Path(os.environ["ATTACK_TRAIN_CSV"]).expanduser().resolve()
 EVALUATION_CSV = Path(os.environ["EVALUATION_CSV"]).expanduser().resolve()
 
-for required in (ANOMALYCLIP_ROOT, MVTEC_ROOT, VISA_ROOT):
-    if not required.exists():
-        raise FileNotFoundError(required)
+if not ANOMALYCLIP_ROOT.exists():
+    raise FileNotFoundError(ANOMALYCLIP_ROOT)
 
 from adversarial_harness.attacks import TargetedPGD, direction_labels
 from adversarial_harness.config import AttackConfig
@@ -127,6 +126,9 @@ DIRECTIONS = csv_tuple("DIRECTIONS", "normal_to_abnormal,abnormal_to_normal")
 LOSS_MODES = csv_tuple("LOSS_MODES", "global,local,combined")
 DATASETS = generation_datasets()
 DISCOVERY_MODE = DATASETS[0] if len(DATASETS) == 1 else "both"
+for dataset_name, dataset_root in (("mvtec", MVTEC_ROOT), ("visa", VISA_ROOT)):
+    if dataset_name in DATASETS and not dataset_root.is_dir():
+        raise FileNotFoundError(dataset_root)
 
 if set(DIRECTIONS) != {"normal_to_abnormal", "abnormal_to_normal"}:
     raise ValueError(f"Unexpected DIRECTIONS: {DIRECTIONS}")
