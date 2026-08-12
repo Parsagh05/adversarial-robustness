@@ -1,0 +1,63 @@
+{
+  "anomaly_map_sigma": 4.0,
+  "anomalyclip_checkpoint": "/kaggle/working/AnomalyCLIP/checkpoints/9_12_4_multiscale/epoch_15.pth",
+  "anomalyclip_root": "/kaggle/working/AnomalyCLIP",
+  "attack": {
+    "directions": [
+      "normal_to_abnormal"
+    ],
+    "epsilon": 0.03137254901960784,
+    "feature_layers": [
+      6,
+      12,
+      18,
+      24
+    ],
+    "global_weight": 0.2,
+    "image_size": 518,
+    "local_weight": 0.8,
+    "loss_modes": [
+      "global"
+    ],
+    "per_image_batch_size": 1,
+    "random_start": true,
+    "scopes": [
+      "dataset"
+    ],
+    "seed": 111,
+    "step_size": 0.00784313725490196,
+    "steps": 20,
+    "temperature": 0.07,
+    "universal_batch_size": 2,
+    "universal_steps": 200
+  },
+  "aupro_fpr_limit": 0.3,
+  "aupro_max_thresholds": 200,
+  "categories": null,
+  "compute_lpips": false,
+  "dataset": "both",
+  "device": "cuda",
+  "diagnostic_max_samples": 64,
+  "fit_fraction": 0.5,
+  "lpips_backbone": "alex",
+  "max_samples_per_category": null,
+  "metric_size": 518,
+  "mvtec_root": "/kaggle/input/datasets/alirezasalehy/mvtec-ad/mvtec_anomaly_detection",
+  "output_root": "/kaggle/working/anomalyclip_thresholds_q95/both",
+  "resume": true,
+  "save_adversarial_examples": 0,
+  "save_universal_perturbations": true,
+  "source_categories": null,
+  "split_manifest_csv": null,
+  "split_manifest_json": null,
+  "split_seed": 111,
+  "target_batch_size": 2,
+  "target_kwargs": {},
+  "target_model": "AnomalyCLIP",
+  "threshold_mode": "normal_train_quantile",
+  "threshold_quantile": 0.95,
+  "thresholds_path": null,
+  "universal_protocol": "transductive",
+  "use_split_manifest": false,
+  "visa_root": "/kaggle/input/datasets/alirezasalehy/visa-ad/VisA_20220922"
+}

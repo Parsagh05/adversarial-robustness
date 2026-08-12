@@ -1,5 +1,9 @@
 # Canonical attack evaluation pipeline
 
+This folder is a self-contained fixed-perturbation evaluator. It owns its model
+adapters, artifact readers, metrics, thresholds, tests, requirements, scripts,
+and Kaggle notebooks; it does not import either generation pipeline.
+
 This pipeline compares anomaly-detection models using the already-generated
 attacks in the Kaggle dataset `alirezasalehy/adversarial-attacks-vlm-survey`.
 It never regenerates attacks or creates a random split. Each bundle's
@@ -292,7 +296,8 @@ The notebook uses the Python API directly. A JSON-configured CLI is also
 available:
 
 ```bash
-python -m blackbox_evaluation_pipeline.evaluate --config /path/to/config.json
+cd blackbox_evaluation_pipeline
+python evaluate.py --config /path/to/config.json
 ```
 
 The JSON keys are the fields of `EvaluationConfig` in
@@ -305,7 +310,8 @@ continuous metrics still run and threshold-dependent columns are omitted.
 For local validation:
 
 ```bash
-pip install -r blackbox_evaluation_pipeline/requirements-dev.txt
+cd blackbox_evaluation_pipeline
+pip install -r requirements-dev.txt
 python -m pytest
 ```
 

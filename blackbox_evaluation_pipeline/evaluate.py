@@ -6,7 +6,10 @@ import argparse
 import json
 from pathlib import Path
 
-from .universal_eval.runner import EvaluationConfig, run_evaluation
+try:
+    from .universal_eval.runner import EvaluationConfig, run_evaluation
+except ImportError:  # Allow `python evaluate.py` from this standalone folder.
+    from universal_eval.runner import EvaluationConfig, run_evaluation
 
 
 def main() -> None:
@@ -27,4 +30,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

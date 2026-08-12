@@ -1,9 +1,13 @@
-# Adversarial anomaly-model evaluation
+# Adversarial anomaly-model pipelines
 
-The active implementation is in
-[`blackbox_evaluation_pipeline`](blackbox_evaluation_pipeline/README.md). It
-evaluates anomaly-detection models against fixed, manifest-defined universal
-perturbations so every model sees exactly the same images and tensors.
+The repository contains three independent top-level projects:
 
-The original end-to-end attack-generation implementation is preserved under
-[`attack_generation_pipeline`](attack_generation_pipeline/README.md).
+- [`blackbox_evaluation_pipeline`](blackbox_evaluation_pipeline/README.md):
+  evaluates models against fixed, manifest-defined perturbations.
+- [`full_attack_generation_pipeline`](full_attack_generation_pipeline/README.md):
+  the complete end-to-end attack-generation and evaluation benchmark.
+- [`perturbation_generation`](perturbation_generation/README.md): generates the
+  versioned focal-plus-Dice perturbation dataset and includes its own attack
+  harness and Kaggle notebook.
+
+No project imports Python code or requirements from either of the other two.
