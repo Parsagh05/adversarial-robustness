@@ -36,11 +36,23 @@ done
 [[ -d "$VISA_ROOT" ]] || { echo "Missing VisA directory: $VISA_ROOT" >&2; exit 2; }
 mkdir -p "$WORK_DIR" "$OUTPUT_BASE/logs"
 
-PYTHON=python3
-if [[ ! -d "$ROOT/.venv" ]]; then
-  "$PYTHON" -m venv --system-site-packages "$ROOT/.venv"
+PYTHON="${PYTHON_BIN:-python3}"
+USE_VENV="${USE_VENV:-false}"
+if [[ "${USE_VENV,,}" == "true" ]]; then
+  VENV_DIR="$ROOT/.venv"
+  if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    if ! "$PYTHON" -m venv --system-site-packages "$VENV_DIR"; then
+      echo "WARNING: virtualenv creation failed; using $PYTHON directly." >&2
+    fi
+  fi
+  if [[ -x "$VENV_DIR/bin/python" ]] && "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1; then
+    PYTHON="$VENV_DIR/bin/python"
+  else
+    echo "WARNING: virtualenv has no working pip; using $PYTHON directly." >&2
+  fi
 fi
-PYTHON="$ROOT/.venv/bin/python"
+"$PYTHON" -m pip --version >/dev/null
+echo "Python runtime: $PYTHON"
 
 clone_pinned() {
   local url="$1" dest="$2" commit="$3"
@@ -59,7 +71,7 @@ clone_pinned \
   "$WORK_DIR/AnomalyCLIP" \
   "$ANOMALYCLIP_COMMIT"
 
-SETUP_STAMP="$ROOT/.venv/.canonical_clip_segmentation_loss_v2_ready"
+SETUP_STAMP="$WORK_DIR/.canonical_clip_segmentation_loss_v2_ready"
 if [[ ! -f "$SETUP_STAMP" ]]; then
   "$PYTHON" -m pip install -q -r "$ROOT/requirements.txt"
   touch "$SETUP_STAMP"

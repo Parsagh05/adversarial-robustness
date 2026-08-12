@@ -57,6 +57,12 @@ export OUTPUT_BASE=/data/canonical_clip_v2
 bash train.sh
 ```
 
+`train.sh` uses the active Python interpreter directly by default, which is
+required on Kaggle images where `venv`/`ensurepip` may be unavailable. Set
+`USE_VENV=true` on a local server if an isolated virtual environment is wanted;
+if its `pip` bootstrap fails, the launcher safely falls back to the active
+interpreter. `PYTHON_BIN` can select a specific interpreter explicitly.
+
 The three modes can be selected independently with `RUN_PER_DATASET`,
 `RUN_PER_CATEGORY`, and `RUN_PER_IMAGE`. Long Kaggle runs should normally run
 one scope per session. Existing `.pt` files are safely resumed only when every
