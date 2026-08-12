@@ -43,7 +43,24 @@ def csv_tuple(name: str, default: str) -> tuple[str, ...]:
 
 
 def parse_numeric(raw: str) -> float:
-    return float(Fraction(str(raw).strip()))
+    """Parse a decimal or one division expression without using ``eval``.
+
+    ``fractions.Fraction`` accepts ``"8/255"`` and ``"0.25"`` separately,
+    but it does not accept ``"0.25/255"``. Step sizes use the latter form, so
+    parse each side independently before performing the division.
+    """
+
+    text = str(raw).strip()
+    parts = [part.strip() for part in text.split("/")]
+    if len(parts) == 1:
+        return float(Fraction(parts[0]))
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(f"Invalid numeric expression: {raw!r}")
+    numerator = Fraction(parts[0])
+    denominator = Fraction(parts[1])
+    if denominator == 0:
+        raise ValueError(f"Numeric expression divides by zero: {raw!r}")
+    return float(numerator / denominator)
 
 
 def parse_fraction_list(raw: str, *, name: str) -> tuple[float, ...]:
