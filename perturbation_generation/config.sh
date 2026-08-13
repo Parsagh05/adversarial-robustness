@@ -43,17 +43,22 @@ PER_IMAGE_STEP_SIZE="${PER_IMAGE_STEP_SIZE:-0.5/255}"
 PER_IMAGE_BATCH_SIZE="${PER_IMAGE_BATCH_SIZE:-2}"
 
 # Segmentation-aware local objective. The target-class focal and soft-Dice
-# terms are evaluated on patch tokens; defect masks focus abnormal->normal
-# attacks, while zero-mask normal images intentionally target the full grid.
+# terms are evaluated on patch tokens. Real defect masks focus abnormal->normal
+# attacks; normal->abnormal attacks use a fixed synthetic region by default.
 LOCAL_FOCAL_WEIGHT="${LOCAL_FOCAL_WEIGHT:-0.5}"
 LOCAL_DICE_WEIGHT="${LOCAL_DICE_WEIGHT:-0.5}"
 LOCAL_FOCAL_GAMMA="${LOCAL_FOCAL_GAMMA:-2.0}"
 LOCAL_DICE_SMOOTH="${LOCAL_DICE_SMOOTH:-1.0}"
 LOCAL_BACKGROUND_WEIGHT="${LOCAL_BACKGROUND_WEIGHT:-0.1}"
+NORMAL_LOCAL_TARGET="${NORMAL_LOCAL_TARGET:-fixed_region}"
+NORMAL_TARGET_REGION_FRACTION="${NORMAL_TARGET_REGION_FRACTION:-0.25}"
+NORMAL_TARGET_CENTER_X="${NORMAL_TARGET_CENTER_X:-0.5}"
+NORMAL_TARGET_CENTER_Y="${NORMAL_TARGET_CENTER_Y:-0.5}"
 
 # Cosine decay prevents a sign-PGD iterate from bouncing indefinitely on the
-# Linf boundary. Fixed-subset diagnostics are recorded at this interval.
+# Linf boundary. Full-training checkpoint losses are recorded at this interval.
 STEP_SIZE_SCHEDULE="${STEP_SIZE_SCHEDULE:-cosine}"
 STEP_SIZE_MIN_RATIO="${STEP_SIZE_MIN_RATIO:-0.1}"
-DIAGNOSTIC_INTERVAL="${DIAGNOSTIC_INTERVAL:-8}"
-DIAGNOSTIC_MAX_SAMPLES="${DIAGNOSTIC_MAX_SAMPLES:-16}"
+# The full selected attack-training set is used for checkpoint selection.
+# Evaluate it periodically because a full pass after every PGD update is costly.
+DIAGNOSTIC_INTERVAL="${DIAGNOSTIC_INTERVAL:-50}"

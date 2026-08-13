@@ -116,12 +116,15 @@ UNIVERSAL_STEP_SIZE = parse_numeric(os.environ.get("PER_CATEGORY_STEP_SIZE", "1/
 UNIVERSAL_STEPS = int(os.environ.get("PER_CATEGORY_STEPS", "64"))
 EFFECTIVE_BATCH_SIZE = int(os.environ.get("PER_CATEGORY_EFFECTIVE_BATCH_SIZE", "8"))
 MICRO_BATCH_SIZE = int(os.environ.get("PER_CATEGORY_MICRO_BATCH_SIZE", "2"))
-DIAGNOSTIC_MAX_SAMPLES = int(os.environ.get("PER_CATEGORY_DIAGNOSTIC_MAX_SAMPLES", "16"))
 LOCAL_FOCAL_WEIGHT = float(os.environ.get("LOCAL_FOCAL_WEIGHT", "0.5"))
 LOCAL_DICE_WEIGHT = float(os.environ.get("LOCAL_DICE_WEIGHT", "0.5"))
 LOCAL_FOCAL_GAMMA = float(os.environ.get("LOCAL_FOCAL_GAMMA", "2.0"))
 LOCAL_DICE_SMOOTH = float(os.environ.get("LOCAL_DICE_SMOOTH", "1.0"))
 LOCAL_BACKGROUND_WEIGHT = float(os.environ.get("LOCAL_BACKGROUND_WEIGHT", "0.1"))
+NORMAL_LOCAL_TARGET = os.environ.get("NORMAL_LOCAL_TARGET", "fixed_region")
+NORMAL_TARGET_REGION_FRACTION = float(os.environ.get("NORMAL_TARGET_REGION_FRACTION", "0.25"))
+NORMAL_TARGET_CENTER_X = float(os.environ.get("NORMAL_TARGET_CENTER_X", "0.5"))
+NORMAL_TARGET_CENTER_Y = float(os.environ.get("NORMAL_TARGET_CENTER_Y", "0.5"))
 STEP_SIZE_SCHEDULE = os.environ.get("STEP_SIZE_SCHEDULE", "cosine")
 STEP_SIZE_MIN_RATIO = float(os.environ.get("STEP_SIZE_MIN_RATIO", "0.1"))
 DIAGNOSTIC_INTERVAL = int(os.environ.get("DIAGNOSTIC_INTERVAL", "8"))
@@ -250,9 +253,7 @@ def optimize_accumulated(
     cursor = len(order)
     rng = np.random.default_rng(run_seed)
     micro_batch_size = min(MICRO_BATCH_SIZE, EFFECTIVE_BATCH_SIZE)
-    diagnostic_samples = list(
-        source_samples[: min(DIAGNOSTIC_MAX_SAMPLES, len(source_samples))]
-    )
+    diagnostic_samples = list(source_samples)
     diagnostic_sample_ids = [sample.protocol_id for sample in diagnostic_samples]
     initial_losses = attacker._diagnostic_losses(
         diagnostic_samples,
@@ -413,6 +414,10 @@ attack_config = AttackConfig(
     local_weight=0.8,
     mask_local_loss=True,
     local_background_weight=LOCAL_BACKGROUND_WEIGHT,
+    normal_local_target=NORMAL_LOCAL_TARGET,
+    normal_target_region_fraction=NORMAL_TARGET_REGION_FRACTION,
+    normal_target_center_x=NORMAL_TARGET_CENTER_X,
+    normal_target_center_y=NORMAL_TARGET_CENTER_Y,
     local_focal_weight=LOCAL_FOCAL_WEIGHT,
     local_dice_weight=LOCAL_DICE_WEIGHT,
     local_focal_gamma=LOCAL_FOCAL_GAMMA,
@@ -511,10 +516,14 @@ for dataset_name in DATASETS:
                             "local_focal_gamma": LOCAL_FOCAL_GAMMA,
                             "local_dice_smooth": LOCAL_DICE_SMOOTH,
                             "local_background_weight": LOCAL_BACKGROUND_WEIGHT,
+                            "normal_local_target": NORMAL_LOCAL_TARGET,
+                            "normal_target_region_fraction": NORMAL_TARGET_REGION_FRACTION,
+                            "normal_target_center_x": NORMAL_TARGET_CENTER_X,
+                            "normal_target_center_y": NORMAL_TARGET_CENTER_Y,
                             "step_size_schedule": STEP_SIZE_SCHEDULE,
                             "step_size_min_ratio": STEP_SIZE_MIN_RATIO,
                             "diagnostic_interval": DIAGNOSTIC_INTERVAL,
-                            "diagnostic_sample_limit": DIAGNOSTIC_MAX_SAMPLES,
+                            "checkpoint_selection_partition": "full_attack_train",
                         }
                         if reusable(pt_path, expected):
                             print(f"[reuse] {dataset_name}/{category}/{fraction_tag(fraction)}/{direction}/{loss_mode}")
@@ -541,7 +550,7 @@ for dataset_name in DATASETS:
                                     "fixed_diagnostic_total_loss", float("nan")
                                 )
                                 if math.isfinite(fixed):
-                                    postfix["fixed_diag"] = f"{fixed:.6f}"
+                                    postfix["full_train"] = f"{fixed:.6f}"
                                 bar.set_postfix(postfix)
 
                             result = optimize_accumulated(
@@ -650,6 +659,10 @@ for row in artifact_rows:
         "local_focal_gamma": row["local_focal_gamma"],
         "local_dice_smooth": row["local_dice_smooth"],
         "local_background_weight": row["local_background_weight"],
+        "normal_local_target": row["normal_local_target"],
+        "normal_target_region_fraction": row["normal_target_region_fraction"],
+        "normal_target_center_x": row["normal_target_center_x"],
+        "normal_target_center_y": row["normal_target_center_y"],
         "step_size_schedule": row["step_size_schedule"],
         "application_order": (
             "load RGB [0,1] -> resize 518x518 -> clamp(clean + delta,0,1) "
@@ -677,6 +690,8 @@ pd.DataFrame([
         "initial_local_dice": row["initial_losses"].get("local_dice", ""),
         "final_local_dice": row["final_losses"].get("local_dice", ""),
         "selected_step": row["selected_step"],
+        "checkpoint_selection_partition": row["checkpoint_selection_partition"],
+        "checkpoint_selection_image_count": len(row["diagnostic_sample_ids"]),
         "convergence_check_passed": (
             row["initial_losses"]["total"] - row["final_losses"]["total"] > 1e-8
         ),

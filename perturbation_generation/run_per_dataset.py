@@ -16,7 +16,7 @@ import random
 import subprocess
 import zipfile
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -44,7 +44,6 @@ from adversarial_harness.config import AttackConfig
 from adversarial_harness.dataset import (
     MVTecSample,
     discover_anomaly_datasets,
-    group_by_category,
     load_image_tensor,
     load_mask,
 )
@@ -107,12 +106,15 @@ EPSILON = parse_numeric(os.environ.get("EPSILON", "8/255"))
 STEP_SIZE = parse_numeric(os.environ.get("PER_DATASET_STEP_SIZE", "2/255"))
 UNIVERSAL_STEPS = int(os.environ.get("PER_DATASET_STEPS", "500"))
 UNIVERSAL_BATCH_SIZE = int(os.environ.get("PER_DATASET_BATCH_SIZE", "1"))
-DIAGNOSTIC_MAX_SAMPLES = int(os.environ.get("PER_DATASET_DIAGNOSTIC_MAX_SAMPLES", "64"))
 LOCAL_FOCAL_WEIGHT = float(os.environ.get("LOCAL_FOCAL_WEIGHT", "0.5"))
 LOCAL_DICE_WEIGHT = float(os.environ.get("LOCAL_DICE_WEIGHT", "0.5"))
 LOCAL_FOCAL_GAMMA = float(os.environ.get("LOCAL_FOCAL_GAMMA", "2.0"))
 LOCAL_DICE_SMOOTH = float(os.environ.get("LOCAL_DICE_SMOOTH", "1.0"))
 LOCAL_BACKGROUND_WEIGHT = float(os.environ.get("LOCAL_BACKGROUND_WEIGHT", "0.1"))
+NORMAL_LOCAL_TARGET = os.environ.get("NORMAL_LOCAL_TARGET", "fixed_region")
+NORMAL_TARGET_REGION_FRACTION = float(os.environ.get("NORMAL_TARGET_REGION_FRACTION", "0.25"))
+NORMAL_TARGET_CENTER_X = float(os.environ.get("NORMAL_TARGET_CENTER_X", "0.5"))
+NORMAL_TARGET_CENTER_Y = float(os.environ.get("NORMAL_TARGET_CENTER_Y", "0.5"))
 STEP_SIZE_SCHEDULE = os.environ.get("STEP_SIZE_SCHEDULE", "cosine")
 STEP_SIZE_MIN_RATIO = float(os.environ.get("STEP_SIZE_MIN_RATIO", "0.1"))
 DIAGNOSTIC_INTERVAL = int(os.environ.get("DIAGNOSTIC_INTERVAL", "10"))
@@ -175,22 +177,6 @@ def mask_loader(sample: MVTecSample) -> torch.Tensor:
     return torch.from_numpy(load_mask(sample, IMAGE_SIZE)).float()
 
 
-def balanced_diagnostics(source_samples: Sequence[MVTecSample], limit: int):
-    queues = {k: list(v) for k, v in group_by_category(source_samples).items()}
-    chosen = []
-    while len(chosen) < limit:
-        added = False
-        for category in sorted(queues):
-            if queues[category]:
-                chosen.append(queues[category].pop(0))
-                added = True
-                if len(chosen) >= limit:
-                    break
-        if not added:
-            break
-    return chosen
-
-
 def artifact_path(source_dataset: str, fraction: float, direction: str, loss_mode: str):
     root = OUTPUT_ROOT / source_dataset / fraction_tag(fraction) / "perturbations"
     return root / f"dataset__{direction}__{loss_mode}.pt"
@@ -215,6 +201,10 @@ attack_config = AttackConfig(
     local_weight=0.8,
     mask_local_loss=True,
     local_background_weight=LOCAL_BACKGROUND_WEIGHT,
+    normal_local_target=NORMAL_LOCAL_TARGET,
+    normal_target_region_fraction=NORMAL_TARGET_REGION_FRACTION,
+    normal_target_center_x=NORMAL_TARGET_CENTER_X,
+    normal_target_center_y=NORMAL_TARGET_CENTER_Y,
     local_focal_weight=LOCAL_FOCAL_WEIGHT,
     local_dice_weight=LOCAL_DICE_WEIGHT,
     local_focal_gamma=LOCAL_FOCAL_GAMMA,
@@ -290,10 +280,14 @@ for source_dataset in DATASETS:
                         "local_focal_gamma": LOCAL_FOCAL_GAMMA,
                         "local_dice_smooth": LOCAL_DICE_SMOOTH,
                         "local_background_weight": LOCAL_BACKGROUND_WEIGHT,
+                        "normal_local_target": NORMAL_LOCAL_TARGET,
+                        "normal_target_region_fraction": NORMAL_TARGET_REGION_FRACTION,
+                        "normal_target_center_x": NORMAL_TARGET_CENTER_X,
+                        "normal_target_center_y": NORMAL_TARGET_CENTER_Y,
                         "step_size_schedule": STEP_SIZE_SCHEDULE,
                         "step_size_min_ratio": STEP_SIZE_MIN_RATIO,
                         "diagnostic_interval": DIAGNOSTIC_INTERVAL,
-                        "diagnostic_sample_limit": DIAGNOSTIC_MAX_SAMPLES,
+                        "checkpoint_selection_partition": "full_attack_train",
                     }
                     if reusable(pt_path, expected):
                         print(f"[reuse] {source_dataset}/{fraction_tag(fraction)}/{direction}/{loss_mode}")
@@ -306,9 +300,6 @@ for source_dataset in DATASETS:
                         run_seed = condition_seed(SEED, source_dataset, fraction, direction, loss_mode)
                         seed_everything(run_seed)
                         attacker = TargetedPGD(surrogate, attack_config)
-                        diagnostics = balanced_diagnostics(
-                            source_train, min(DIAGNOSTIC_MAX_SAMPLES, len(source_train))
-                        )
                         bar = tqdm(total=UNIVERSAL_STEPS, desc="PGD", unit="step")
 
                         def progress(step, total, metrics):
@@ -319,7 +310,7 @@ for source_dataset in DATASETS:
                             }
                             fixed = metrics.get("diagnostic_total_loss", float("nan"))
                             if math.isfinite(fixed):
-                                postfix["fixed_diag"] = f"{fixed:.6f}"
+                                postfix["full_train"] = f"{fixed:.6f}"
                             bar.set_postfix(postfix)
 
                         result = attacker.optimize_universal(
@@ -328,7 +319,7 @@ for source_dataset in DATASETS:
                             target_label,
                             loss_mode,
                             mask_loader=(mask_loader if loss_mode in {"local", "combined"} else None),
-                            diagnostic_samples=diagnostics,
+                            diagnostic_samples=source_train,
                             progress=progress,
                         )
                         bar.close()
@@ -449,6 +440,10 @@ for row in artifact_rows:
             "local_focal_gamma": row["local_focal_gamma"],
             "local_dice_smooth": row["local_dice_smooth"],
             "local_background_weight": row["local_background_weight"],
+            "normal_local_target": row["normal_local_target"],
+            "normal_target_region_fraction": row["normal_target_region_fraction"],
+            "normal_target_center_x": row["normal_target_center_x"],
+            "normal_target_center_y": row["normal_target_center_y"],
             "step_size_schedule": row["step_size_schedule"],
             "application_order": (
                 "load RGB [0,1] -> resize 518x518 -> clamp(clean + delta,0,1) "
@@ -476,6 +471,8 @@ pd.DataFrame([
         "initial_local_dice": row["initial_losses"].get("local_dice", ""),
         "final_local_dice": row["final_losses"].get("local_dice", ""),
         "selected_step": row["selected_step"],
+        "checkpoint_selection_partition": row["checkpoint_selection_partition"],
+        "checkpoint_selection_image_count": len(row["diagnostic_sample_ids"]),
         "convergence_check_passed": (
             row["initial_losses"]["total"] - row["final_losses"]["total"] > 1e-8
         ),

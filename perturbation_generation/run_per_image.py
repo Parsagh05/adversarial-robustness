@@ -111,6 +111,10 @@ LOCAL_DICE_WEIGHT = float(os.environ.get("LOCAL_DICE_WEIGHT", "0.5"))
 LOCAL_FOCAL_GAMMA = float(os.environ.get("LOCAL_FOCAL_GAMMA", "2.0"))
 LOCAL_DICE_SMOOTH = float(os.environ.get("LOCAL_DICE_SMOOTH", "1.0"))
 LOCAL_BACKGROUND_WEIGHT = float(os.environ.get("LOCAL_BACKGROUND_WEIGHT", "0.1"))
+NORMAL_LOCAL_TARGET = os.environ.get("NORMAL_LOCAL_TARGET", "fixed_region")
+NORMAL_TARGET_REGION_FRACTION = float(os.environ.get("NORMAL_TARGET_REGION_FRACTION", "0.25"))
+NORMAL_TARGET_CENTER_X = float(os.environ.get("NORMAL_TARGET_CENTER_X", "0.5"))
+NORMAL_TARGET_CENTER_Y = float(os.environ.get("NORMAL_TARGET_CENTER_Y", "0.5"))
 STEP_SIZE_SCHEDULE = os.environ.get("STEP_SIZE_SCHEDULE", "cosine")
 STEP_SIZE_MIN_RATIO = float(os.environ.get("STEP_SIZE_MIN_RATIO", "0.1"))
 DIAGNOSTIC_INTERVAL = int(os.environ.get("DIAGNOSTIC_INTERVAL", "8"))
@@ -313,6 +317,10 @@ attack_config = AttackConfig(
     local_weight=0.8,
     mask_local_loss=True,
     local_background_weight=LOCAL_BACKGROUND_WEIGHT,
+    normal_local_target=NORMAL_LOCAL_TARGET,
+    normal_target_region_fraction=NORMAL_TARGET_REGION_FRACTION,
+    normal_target_center_x=NORMAL_TARGET_CENTER_X,
+    normal_target_center_y=NORMAL_TARGET_CENTER_Y,
     local_focal_weight=LOCAL_FOCAL_WEIGHT,
     local_dice_weight=LOCAL_DICE_WEIGHT,
     local_focal_gamma=LOCAL_FOCAL_GAMMA,
@@ -390,6 +398,10 @@ for dataset_name in DATASETS:
                         "local_focal_gamma": LOCAL_FOCAL_GAMMA,
                         "local_dice_smooth": LOCAL_DICE_SMOOTH,
                         "local_background_weight": LOCAL_BACKGROUND_WEIGHT,
+                        "normal_local_target": NORMAL_LOCAL_TARGET,
+                        "normal_target_region_fraction": NORMAL_TARGET_REGION_FRACTION,
+                        "normal_target_center_x": NORMAL_TARGET_CENTER_X,
+                        "normal_target_center_y": NORMAL_TARGET_CENTER_Y,
                         "step_size_schedule": STEP_SIZE_SCHEDULE,
                         "step_size_min_ratio": STEP_SIZE_MIN_RATIO,
                     }

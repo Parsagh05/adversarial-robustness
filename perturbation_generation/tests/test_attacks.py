@@ -31,7 +31,7 @@ class _DifferentiableFakeSurrogate(_FakeSurrogate):
 
 
 class MaskAwareLocalLossTests(unittest.TestCase):
-    def test_defect_mask_focuses_local_loss_and_zero_mask_falls_back(self) -> None:
+    def test_defect_mask_and_fixed_normal_region_focus_local_loss(self) -> None:
         attacker = TargetedPGD(
             _FakeSurrogate(),
             AttackConfig(
@@ -71,7 +71,16 @@ class MaskAwareLocalLossTests(unittest.TestCase):
             mode="local",
             spatial_masks=zero_mask,
         )["local"]
-        normal_unmasked = attacker._group_losses(
+        full_image_attacker = TargetedPGD(
+            _FakeSurrogate(),
+            AttackConfig(
+                temperature=1.0,
+                mask_local_loss=True,
+                local_background_weight=0.0,
+                normal_local_target="full_image",
+            ),
+        )
+        normal_full_image = full_image_attacker._group_losses(
             global_features,
             patch_features,
             ["object"],
@@ -80,7 +89,9 @@ class MaskAwareLocalLossTests(unittest.TestCase):
         )["local"]
 
         self.assertGreater(float(masked), float(unmasked))
-        self.assertAlmostEqual(float(normal_fallback), float(normal_unmasked), places=6)
+        self.assertNotAlmostEqual(
+            float(normal_fallback), float(normal_full_image), places=6
+        )
 
     def test_one_targeted_local_step_reduces_same_batch_loss(self) -> None:
         attacker = TargetedPGD(

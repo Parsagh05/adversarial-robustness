@@ -12,6 +12,7 @@ VALID_SCOPES = ("per_image", "per_category", "dataset")
 VALID_DIRECTIONS = ("normal_to_abnormal", "abnormal_to_normal")
 VALID_LOSS_MODES = ("global", "local", "combined")
 VALID_STEP_SIZE_SCHEDULES = ("constant", "cosine")
+VALID_NORMAL_LOCAL_TARGETS = ("fixed_region", "full_image")
 VALID_UNIVERSAL_PROTOCOLS = ("transductive", "held_out")
 VALID_THRESHOLD_MODES = ("normal_train_quantile",)
 VALID_DATASETS = (
@@ -47,6 +48,10 @@ class AttackConfig:
     local_weight: float = 0.8
     mask_local_loss: bool = True
     local_background_weight: float = 0.1
+    normal_local_target: str = "fixed_region"
+    normal_target_region_fraction: float = 0.25
+    normal_target_center_x: float = 0.5
+    normal_target_center_y: float = 0.5
     local_focal_weight: float = 0.5
     local_dice_weight: float = 0.5
     local_focal_gamma: float = 2.0
@@ -97,6 +102,18 @@ class AttackConfig:
             raise ValueError("at least one loss weight must be positive")
         if not 0.0 <= self.local_background_weight <= 1.0:
             raise ValueError("local_background_weight must be in [0, 1]")
+        self.normal_local_target = str(self.normal_local_target)
+        if self.normal_local_target not in VALID_NORMAL_LOCAL_TARGETS:
+            raise ValueError(
+                "normal_local_target must be one of "
+                f"{VALID_NORMAL_LOCAL_TARGETS}, got {self.normal_local_target!r}"
+            )
+        if not 0.0 < self.normal_target_region_fraction <= 1.0:
+            raise ValueError("normal_target_region_fraction must be in (0, 1]")
+        if not 0.0 <= self.normal_target_center_x <= 1.0:
+            raise ValueError("normal_target_center_x must be in [0, 1]")
+        if not 0.0 <= self.normal_target_center_y <= 1.0:
+            raise ValueError("normal_target_center_y must be in [0, 1]")
         if self.local_focal_weight < 0 or self.local_dice_weight < 0:
             raise ValueError("local focal/dice weights cannot be negative")
         if self.local_focal_weight + self.local_dice_weight <= 0:

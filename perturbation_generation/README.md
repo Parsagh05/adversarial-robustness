@@ -21,8 +21,9 @@ local = LOCAL_FOCAL_WEIGHT * target_class_focal
       + LOCAL_DICE_WEIGHT  * target_class_soft_dice
 ```
 
-- `normal_to_abnormal`: the zero-mask fallback targets the full patch grid as
-  anomalous. This explicitly models a dense false-positive attack.
+- `normal_to_abnormal`: a configurable fixed synthetic region is targeted as
+  anomalous. The default is a centred square spanning 25% of each image side.
+  Set `NORMAL_LOCAL_TARGET=full_image` only to reproduce the previous behavior.
 - `abnormal_to_normal`: the ground-truth defect mask receives weight `1.0` and
   background receives `LOCAL_BACKGROUND_WEIGHT`. The target-class probability
   is normal, so the objective suppresses the known defect region.
@@ -36,12 +37,14 @@ differentiates through an evaluated anomaly detector.
 
 - Dataset-level attacks use an effective batch of 8 instead of one image.
 - PGD uses cosine step-size decay and smaller initial steps.
-- A fixed diagnostic subset is evaluated periodically. Random batch loss is
-  labelled separately and is never presented as a convergence curve.
+- The complete selected attack-training set is evaluated periodically. Random
+  batch loss is labelled separately and is never presented as a convergence
+  curve.
 - Gradient norms, Linf-bound saturation, initial/final focal and Dice losses,
   and the full universal-optimization history are stored in artifact metadata.
-- The best fixed-diagnostic checkpoint is saved, rather than blindly saving the
-  last stochastic iterate.
+- The checkpoint with the lowest complete attack-training loss is saved, rather
+  than blindly saving the last stochastic iterate. The held-out evaluation
+  split is never used for checkpoint selection.
 - Every bundle includes `optimization_diagnostics.csv`.
 - Artifact reuse checks include all loss/schedule settings, generator hashes,
   repository commit, and the pinned AnomalyCLIP commit.

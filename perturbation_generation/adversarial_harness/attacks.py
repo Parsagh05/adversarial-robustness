@@ -121,16 +121,52 @@ class TargetedPGD:
                             category_masks[:, None].float(), (side, side)
                         )[:, 0].reshape(len(indices), token_count)
                         has_defect = pooled_masks.sum(dim=1, keepdim=True) > 0
+                        if (
+                            target_label == 1
+                            and self.config.normal_local_target == "fixed_region"
+                        ):
+                            region_side = max(
+                                1,
+                                int(round(side * self.config.normal_target_region_fraction)),
+                            )
+                            center_x = int(
+                                round(self.config.normal_target_center_x * (side - 1))
+                            )
+                            center_y = int(
+                                round(self.config.normal_target_center_y * (side - 1))
+                            )
+                            left = min(
+                                max(center_x - region_side // 2, 0),
+                                side - region_side,
+                            )
+                            top = min(
+                                max(center_y - region_side // 2, 0),
+                                side - region_side,
+                            )
+                            normal_region = torch.zeros(
+                                (side, side),
+                                device=pooled_masks.device,
+                                dtype=pooled_masks.dtype,
+                            )
+                            normal_region[
+                                top : top + region_side, left : left + region_side
+                            ] = 1.0
+                            normal_region = normal_region.reshape(1, token_count).expand(
+                                len(indices), -1
+                            )
+                            effective_masks = torch.where(
+                                has_defect, pooled_masks, normal_region
+                            )
+                        else:
+                            effective_masks = torch.where(
+                                has_defect, pooled_masks, torch.ones_like(pooled_masks)
+                            )
                         masked_weights = (
                             self.config.local_background_weight
-                            + (1.0 - self.config.local_background_weight) * pooled_masks
+                            + (1.0 - self.config.local_background_weight)
+                            * effective_masks
                         )
-                        # Normal source images have no positive mask. Their local
-                        # false-alarm objective therefore continues to target the
-                        # complete patch grid.
-                        token_weights = torch.where(
-                            has_defect, masked_weights, token_weights
-                        )
+                        token_weights = masked_weights
                     weight_sum = token_weights.sum(dim=1).clamp_min(1e-12)
                     per_image_focal = (
                         token_focal * token_weights
@@ -579,7 +615,7 @@ class TargetedPGD:
         mode: str,
         mask_loader: Optional[Callable[[object], torch.Tensor]] = None,
     ) -> Dict[str, float]:
-        """Average losses on one fixed bounded subset before and after PGD."""
+        """Average losses over the supplied fixed checkpoint-selection set."""
 
         totals: Dict[str, float] = {}
         counts: Dict[str, int] = {}
