@@ -57,6 +57,39 @@ class QualitativeSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_selects_by_target_region_pixel_success(self) -> None:
+        rows = [
+            {
+                "sample_id": "pixel-low",
+                "target_region_pixel_success_eligible": 1,
+                "target_region_pixel_attack_success": 1,
+                "target_region_pixel_flip_rate": 55.0,
+            },
+            {
+                "sample_id": "pixel-high",
+                "target_region_pixel_success_eligible": 1,
+                "target_region_pixel_attack_success": 1,
+                "target_region_pixel_flip_rate": 90.0,
+            },
+            {
+                "sample_id": "pixel-failure",
+                "target_region_pixel_success_eligible": 1,
+                "target_region_pixel_attack_success": 0,
+                "target_region_pixel_flip_rate": 10.0,
+            },
+        ]
+        selected = select_representative_rows(
+            rows, selection_basis="target_region_pixel"
+        )
+        self.assertEqual(
+            [(name, row["sample_id"]) for name, row in selected],
+            [
+                ("strongest_success", "pixel-high"),
+                ("median_success", "pixel-low"),
+                ("worst_failure", "pixel-failure"),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

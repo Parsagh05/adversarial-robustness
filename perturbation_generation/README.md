@@ -33,6 +33,15 @@ local = LOCAL_FOCAL_WEIGHT * target_class_focal
 The attack still uses only the frozen public CLIP surrogate. It never loads or
 differentiates through an evaluated anomaly detector.
 
+## Balanced protocol
+
+For both MVTec and VisA, each category is deterministically downsampled to the
+same number of normal and anomalous test images. Each label is then split into
+attack-training and held-out evaluation partitions with the same seed and
+fraction. Consequently, both attack directions use equal counts within every
+category and partition. The discarded surplus images are not used by either
+partition.
+
 ## Optimization safeguards
 
 - Dataset-level attacks use an effective batch of 8 instead of one image.

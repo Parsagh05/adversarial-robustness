@@ -8,7 +8,8 @@ OUTPUT_BASE="${OUTPUT_BASE:-/ABSOLUTE/PATH/TO/canonical_clip_outputs}"
 # Pin the external feature-loader implementation used by every run.
 ANOMALYCLIP_COMMIT="${ANOMALYCLIP_COMMIT:-3911738c0867544f545a076ad78f3f11d9ecbfdf}"
 
-# Fixed CSV split: 50% attack_train and 50% evaluation/test.
+# Within each dataset/category, downsample to equal label counts, then split
+# each label 50% attack_train and 50% evaluation/test.
 SPLIT_SEED="${SPLIT_SEED:-111}"
 EVALUATION_FRACTION="${EVALUATION_FRACTION:-0.50}"
 

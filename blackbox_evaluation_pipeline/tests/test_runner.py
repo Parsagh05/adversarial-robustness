@@ -167,6 +167,10 @@ class EndToEndRunnerTests(unittest.TestCase):
             self.assertEqual(float(rows[0]["adversarial_accuracy"]), 50.0)
             self.assertEqual(float(rows[0]["attack_flip_rate"]), 100.0)
             self.assertEqual(float(rows[0]["targeted_attack_success_rate"]), 100.0)
+            self.assertEqual(float(rows[0]["target_region_pixel_flip_rate"]), 0.0)
+            self.assertEqual(
+                float(rows[0]["target_region_pixel_attack_success_rate"]), 0.0
+            )
             with (output / "per_image.csv").open(newline="", encoding="utf-8") as handle:
                 per_image = {row["sample_id"]: row for row in csv.DictReader(handle)}
             self.assertEqual(per_image["test/toy/good/000"]["attacked"], "1")
@@ -179,6 +183,15 @@ class EndToEndRunnerTests(unittest.TestCase):
                 "1",
             )
             self.assertEqual(per_image["test/toy/good/000"]["attack_flipped"], "1")
+            self.assertEqual(
+                per_image["test/toy/good/000"]["target_region_pixel_count"], "16"
+            )
+            self.assertEqual(
+                per_image["test/toy/good/000"][
+                    "target_region_pixel_attack_success"
+                ],
+                "0",
+            )
             self.assertEqual(per_image["test/toy/crack/001"]["score_shift"], "0.0")
             self.assertEqual(
                 per_image["test/toy/crack/001"]["map_directional_mean_shift"],
@@ -222,6 +235,10 @@ class EndToEndRunnerTests(unittest.TestCase):
                     "clean_overlay.png",
                     "adversarial_overlay.png",
                     "ground_truth_mask.png",
+                    "clean_pixel_prediction.png",
+                    "adversarial_pixel_prediction.png",
+                    "target_region_mask.png",
+                    "successful_target_pixel_flips.png",
                     "heatmap_difference.png",
                     "metrics.json",
                 },

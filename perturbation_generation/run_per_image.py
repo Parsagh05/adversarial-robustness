@@ -47,6 +47,7 @@ from adversarial_harness.config import AttackConfig
 from adversarial_harness.dataset import MVTecSample, discover_anomaly_datasets, load_image_tensor, load_mask
 from adversarial_harness.models import CLIPSurrogate
 from common import (
+    LABEL_BALANCE_POLICY,
     assert_partition_disjoint,
     bind_discovered_samples_from_partition_csvs,
     generation_datasets,
@@ -385,6 +386,7 @@ for dataset_name in DATASETS:
                         "image_size": IMAGE_SIZE,
                         "seed": SEED,
                         "protocol_split_sha256": protocol_sha,
+                        "label_balance_policy": LABEL_BALANCE_POLICY,
                         "benchmark_commit": REPO_COMMIT,
                         "effective_batch_size": EFFECTIVE_BATCH_SIZE,
                         "configured_micro_batch_size": MICRO_BATCH_SIZE,
@@ -514,6 +516,7 @@ for row in artifact_rows:
         "alignment_rule": "sample_ids[i] maps exactly to deltas[i]; never reuse on another image",
         "artifact_sha256": row["artifact_file_sha256"],
         "protocol_split_sha256": protocol_sha,
+        "label_balance_policy": row["label_balance_policy"],
         "image_size": IMAGE_SIZE,
         "epsilon": EPSILON,
         "step_size": STEP_SIZE,

@@ -10,6 +10,7 @@ from blackbox_evaluation_pipeline.universal_eval.metrics import (
     optimal_f1_operating_point,
     pixel_metrics,
     targeted_attack_metrics,
+    targeted_region_pixel_metrics,
 )
 
 
@@ -33,6 +34,7 @@ class ContinuousMetricTests(unittest.TestCase):
         result = pixel_metrics(masks, maps, fpr_limit=0.3, max_thresholds=20)
         self.assertAlmostEqual(result["p_auroc"], 100.0)
         self.assertAlmostEqual(result["p_f1_max"], 100.0)
+        self.assertAlmostEqual(result["p_f1_threshold"], 0.8)
         self.assertGreaterEqual(result["aupro"], 99.0)
 
     def test_binary_classification_metrics(self) -> None:
@@ -50,6 +52,40 @@ class ContinuousMetricTests(unittest.TestCase):
         self.assertEqual(result["attack_flip_rate"], 50.0)
         self.assertEqual(result["targeted_attack_success_rate"], 100.0)
         self.assertEqual(result["targeted_success_eligible_count"], 1)
+
+    def test_region_pixel_success_ignores_changes_outside_target(self) -> None:
+        clean = np.zeros((3, 3), dtype=np.float32)
+        adversarial = np.ones((3, 3), dtype=np.float32)
+        adversarial[1, 1] = 0.0
+        region = np.zeros((3, 3), dtype=bool)
+        region[1, 1] = True
+        result = targeted_region_pixel_metrics(
+            clean,
+            adversarial,
+            region,
+            threshold=0.5,
+            source_label=0,
+            target_label=1,
+        )
+        self.assertEqual(result["target_region_pixel_count"], 1)
+        self.assertEqual(result["target_region_pixel_eligible_count"], 1)
+        self.assertEqual(result["target_region_pixel_flip_rate"], 0.0)
+        self.assertEqual(result["target_region_pixel_attack_success"], 0)
+
+    def test_region_pixel_success_requires_half_of_eligible_region(self) -> None:
+        clean = np.ones((2, 2), dtype=np.float32)
+        adversarial = np.asarray([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32)
+        result = targeted_region_pixel_metrics(
+            clean,
+            adversarial,
+            np.ones((2, 2), dtype=bool),
+            threshold=0.5,
+            source_label=1,
+            target_label=0,
+            minimum_flip_fraction=0.5,
+        )
+        self.assertEqual(result["target_region_pixel_flip_rate"], 50.0)
+        self.assertEqual(result["target_region_pixel_attack_success"], 1)
 
 
 if __name__ == "__main__":
