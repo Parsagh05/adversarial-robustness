@@ -79,6 +79,11 @@ RUN_PHASE=evaluate RUN_SETUPS=steps500_eps2 bash train.sh
 Completed artifacts and evaluations are reused unless
 `OVERWRITE_EXISTING=true` is set.
 
+Before any optimization, `preflight.py` validates the selected dataset roots,
+the pinned AnomalyCLIP checkout and checkpoints, the required pipeline files,
+and output-directory writability. Generated directory and ZIP bundles are also
+audited against their manifests before evaluation begins.
+
 Local CPU unit checks (they do not generate attacks) can be run with:
 
 ```bash
@@ -93,6 +98,9 @@ session. Use the included notebook, but select one setup per saved Kaggle run.
 `RUN_SETUPS=all` is intended for a server or a multi-session workflow. The
 `SMOKE_TEST=true` option validates plumbing only and must never be reported as a
 benchmark result.
+
+The notebook exposes separate generation and evaluation batch sizes. Both are
+set to 2 by default for a 16 GB Kaggle T4.
 
 ## Output layout
 

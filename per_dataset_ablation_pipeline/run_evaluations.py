@@ -15,6 +15,7 @@ from evaluation import (
     run_evaluation,
 )
 from evaluation.universal_eval.artifacts import load_manifest
+from path_contract import bundle_path, ensure_bundle_protocol_files
 
 
 ROOT = Path(__file__).resolve().parent
@@ -65,13 +66,7 @@ def selected_setup_ids() -> list[str]:
 
 
 def bundle_for(setup_id: str) -> Path:
-    return (
-        OUTPUT
-        / "setups"
-        / setup_id
-        / "attack_generation"
-        / "canonical_clip_per_dataset_segmentation_loss_v2"
-    )
+    return bundle_path(OUTPUT, setup_id)
 
 
 def validate_bundle(setup_id: str) -> tuple[Path, int, str]:
@@ -79,6 +74,8 @@ def validate_bundle(setup_id: str) -> tuple[Path, int, str]:
     if SMOKE:
         expected_steps = int(os.environ.get("SMOKE_STEPS", "2"))
     bundle = bundle_for(setup_id)
+    for repaired in ensure_bundle_protocol_files(bundle):
+        print(f"[repair] copied protocol CSV into bundle: {repaired}")
     artifacts = load_manifest(
         bundle,
         scopes=("per_dataset",),
@@ -164,14 +161,7 @@ def main() -> None:
         or not all(path.is_file() for path in threshold_paths.values())
     ):
         first_setup = setup_ids[0]
-        evaluation_index = (
-            OUTPUT
-            / "setups"
-            / first_setup
-            / "attack_generation"
-            / "protocol"
-            / "evaluation_test_indices.csv"
-        )
+        evaluation_index = validated[first_setup][0] / "evaluation_test_indices.csv"
         print("===== CALIBRATE CLEAN IMAGE F1-MAX THRESHOLDS =====")
         calibrate_thresholds(
             ThresholdCalibrationConfig(

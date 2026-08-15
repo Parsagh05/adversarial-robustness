@@ -15,14 +15,14 @@ for name in PIPELINE_OUTPUT; do
 done
 case "$DATASETS" in
   mvtec)
-    [[ "$MVTEC_ROOT" != /ABSOLUTE/PATH/TO/* && -d "$MVTEC_ROOT" ]] || { echo "Missing MVTec: $MVTEC_ROOT" >&2; exit 2; }
+    [[ "$MVTEC_ROOT" != /ABSOLUTE/PATH/TO/* && -d "$MVTEC_ROOT/bottle/test" ]] || { echo "Invalid MVTec root: $MVTEC_ROOT" >&2; exit 2; }
     ;;
   visa)
-    [[ "$VISA_ROOT" != /ABSOLUTE/PATH/TO/* && -d "$VISA_ROOT" ]] || { echo "Missing VisA: $VISA_ROOT" >&2; exit 2; }
+    [[ "$VISA_ROOT" != /ABSOLUTE/PATH/TO/* && -f "$VISA_ROOT/split_csv/1cls.csv" ]] || { echo "Invalid VisA root: $VISA_ROOT" >&2; exit 2; }
     ;;
   mvtec,visa)
-    [[ "$MVTEC_ROOT" != /ABSOLUTE/PATH/TO/* && -d "$MVTEC_ROOT" ]] || { echo "Missing MVTec: $MVTEC_ROOT" >&2; exit 2; }
-    [[ "$VISA_ROOT" != /ABSOLUTE/PATH/TO/* && -d "$VISA_ROOT" ]] || { echo "Missing VisA: $VISA_ROOT" >&2; exit 2; }
+    [[ "$MVTEC_ROOT" != /ABSOLUTE/PATH/TO/* && -d "$MVTEC_ROOT/bottle/test" ]] || { echo "Invalid MVTec root: $MVTEC_ROOT" >&2; exit 2; }
+    [[ "$VISA_ROOT" != /ABSOLUTE/PATH/TO/* && -f "$VISA_ROOT/split_csv/1cls.csv" ]] || { echo "Invalid VisA root: $VISA_ROOT" >&2; exit 2; }
     ;;
   *) echo "DATASETS must be mvtec, visa, or mvtec,visa" >&2; exit 2 ;;
 esac
@@ -49,12 +49,29 @@ git -C "$MODEL_ROOT" checkout --detach --force FETCH_HEAD
   echo "Pinned AnomalyCLIP checkout mismatch" >&2
   exit 2
 }
+case "$DATASETS" in
+  mvtec|mvtec,visa)
+    [[ -f "$MODEL_ROOT/checkpoints/9_12_4_multiscale/epoch_15.pth" ]] || {
+      echo "Missing AnomalyCLIP MVTec-target checkpoint" >&2
+      exit 2
+    }
+    ;;
+esac
+case "$DATASETS" in
+  visa|mvtec,visa)
+    [[ -f "$MODEL_ROOT/checkpoints/9_12_4_multiscale_visa/epoch_15.pth" ]] || {
+      echo "Missing AnomalyCLIP VisA-target checkpoint" >&2
+      exit 2
+    }
+    ;;
+esac
 
 STAMP="$RUNTIME_ROOT/.evaluation_dependencies_ready"
 if [[ ! -f "$STAMP" ]]; then
   "$PYTHON_BIN" -m pip install -q -r "$ROOT/evaluation/requirements.txt"
   touch "$STAMP"
 fi
+"$PYTHON_BIN" "$ROOT/preflight.py"
 
 SETUP_IDS=(steps500_eps2 steps500_eps4 steps800_eps2 steps800_eps4)
 SETUP_STEPS=(500 500 800 800)

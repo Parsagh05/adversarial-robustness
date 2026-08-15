@@ -13,6 +13,7 @@ import hashlib
 import math
 import os
 import random
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -179,7 +180,13 @@ def mask_loader(sample: MVTecSample) -> torch.Tensor:
 
 
 def artifact_path(source_dataset: str, fraction: float, direction: str, loss_mode: str):
-    root = OUTPUT_ROOT / source_dataset / fraction_tag(fraction) / "perturbations"
+    root = (
+        OUTPUT_ROOT
+        / "noises"
+        / source_dataset
+        / fraction_tag(fraction)
+        / "perturbations"
+    )
     return root / f"dataset__{direction}__{loss_mode}.pt"
 
 
@@ -402,7 +409,7 @@ for row in artifact_rows:
     train_ids = set(row["attack_train_sample_ids"])
     if train_ids & evaluation_ids:
         raise RuntimeError(f"Leakage in artifact {artifact}")
-    relative_noise = Path("noises") / artifact.relative_to(OUTPUT_ROOT)
+    relative_noise = artifact.relative_to(OUTPUT_ROOT)
     unique_noise_paths.append(artifact)
     for target_dataset in DATASETS:
         attacked_eval_ids = sorted(
@@ -483,6 +490,29 @@ pd.DataFrame([
     for row in artifact_rows
 ]).to_csv(diagnostics_path, index=False)
 
+# Keep the directory bundle directly evaluable. The ZIP already contains these
+# protocol files, but the end-to-end pipeline evaluates the uncompressed folder.
+for protocol_path in (ATTACK_TRAIN_CSV, EVALUATION_CSV):
+    shutil.copy2(protocol_path, OUTPUT_ROOT / protocol_path.name)
+
+# Validate the directory bundle before spending time packaging or evaluating it.
+for required_path in (
+    OUTPUT_ROOT / "attack_manifest.csv",
+    OUTPUT_ROOT / "optimization_diagnostics.csv",
+    OUTPUT_ROOT / "attack_train_indices.csv",
+    OUTPUT_ROOT / "evaluation_test_indices.csv",
+):
+    if not required_path.is_file():
+        raise FileNotFoundError(f"Incomplete directory bundle: {required_path}")
+for delivery in delivery_rows:
+    recorded_noise = OUTPUT_ROOT / Path(str(delivery["noise_file"]))
+    if not recorded_noise.is_file():
+        raise FileNotFoundError(
+            f"Manifest noise path is absent from directory bundle: {recorded_noise}"
+        )
+    if sha256_file(recorded_noise) != delivery["artifact_sha256"]:
+        raise RuntimeError(f"Manifest checksum mismatch: {recorded_noise}")
+
 dataset_archive_tag = "" if len(DATASETS) > 1 else f"_{DATASETS[0]}"
 archive_path = OUTPUT_BASE / (
     f"canonical_clip_per_dataset{dataset_archive_tag}_segmentation_loss_v2.zip"
@@ -498,9 +528,24 @@ with zipfile.ZipFile(archive_path, "w", allowZip64=True) as archive:
     for artifact in sorted(set(unique_noise_paths)):
         archive.write(
             artifact,
-            Path("noises") / artifact.relative_to(OUTPUT_ROOT),
+            artifact.relative_to(OUTPUT_ROOT),
             compress_type=zipfile.ZIP_STORED,
         )
+
+with zipfile.ZipFile(archive_path, "r") as archive:
+    archived_names = set(archive.namelist())
+expected_archive_names = {
+    "attack_train_indices.csv",
+    "evaluation_test_indices.csv",
+    "attack_manifest.csv",
+    "optimization_diagnostics.csv",
+    *(str(row["noise_file"]).replace("\\", "/") for row in delivery_rows),
+}
+missing_archive_names = expected_archive_names - archived_names
+if missing_archive_names:
+    raise RuntimeError(
+        f"ZIP bundle is missing entries: {sorted(missing_archive_names)[:5]}"
+    )
 
 print("\nPer-dataset optimization artifacts:", len(artifact_rows))
 print("Per-dataset evaluation manifest rows:", len(delivery_rows))

@@ -96,7 +96,16 @@ def _resolve_noise_path(bundle_root: Path, recorded_path: str) -> Path:
         parts = parts[parts.index(bundle_root.name) + 1 :]
     elif "noises" in parts:
         parts = parts[parts.index("noises") :]
-    return bundle_root.joinpath(*parts)
+    resolved = bundle_root.joinpath(*parts)
+    if resolved.is_file():
+        return resolved
+    # Legacy uncompressed generator folders stored tensors directly below the
+    # bundle while their manifest used the ZIP's leading ``noises/`` prefix.
+    if parts and parts[0] == "noises":
+        legacy = bundle_root.joinpath(*parts[1:])
+        if legacy.is_file():
+            return legacy
+    return resolved
 
 
 def _bundle_roots(root: Path, scopes: tuple[str, ...]) -> list[tuple[str, Path]]:
