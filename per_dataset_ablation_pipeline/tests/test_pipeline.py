@@ -21,6 +21,28 @@ class AblationPipelineTests(unittest.TestCase):
             )
             self.assertEqual(config.pixel_threshold_mode, mode)
 
+    def test_threshold_sweep_requires_one_output_per_mode(self) -> None:
+        modes = ("fixed_0_5", "image_f1", "clean_pixel_f1")
+        config = EvaluationConfig(
+            artifacts_root="artifacts",
+            output_root="unused",
+            model_name="model",
+            model_kwargs_by_target={},
+            pixel_threshold_modes=modes,
+            output_roots_by_pixel_threshold_mode={mode: f"out/{mode}" for mode in modes},
+        )
+        self.assertEqual(config.pixel_threshold_modes, modes)
+
+        with self.assertRaisesRegex(ValueError, "must define every selected mode"):
+            EvaluationConfig(
+                artifacts_root="artifacts",
+                output_root="unused",
+                model_name="model",
+                model_kwargs_by_target={},
+                pixel_threshold_modes=modes,
+                output_roots_by_pixel_threshold_mode={"fixed_0_5": "out/fixed"},
+            )
+
     def test_region_success_does_not_count_outside_pixels(self) -> None:
         clean = np.zeros((3, 3), dtype=np.float32)
         adversarial = np.ones((3, 3), dtype=np.float32)
@@ -61,4 +83,3 @@ class AblationPipelineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

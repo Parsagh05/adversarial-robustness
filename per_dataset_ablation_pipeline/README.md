@@ -24,7 +24,8 @@ and combined losses. The initial step size is 0.25/255 with cosine decay to
 10%, and the full balanced attack-training split is used for optimization and
 checkpoint selection.
 
-Each perturbation set is evaluated three times:
+Each perturbation set uses one shared AnomalyCLIP inference pass to produce
+three threshold-specific reports and visualization folders:
 
 1. `fixed_0_5`: use 0.5 as the anomaly-map pixel decision threshold.
 2. `image_f1`: apply the automatically calibrated clean image-level F1-max

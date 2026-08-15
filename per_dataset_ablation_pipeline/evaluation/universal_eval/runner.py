@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import csv
 import json
 import math
@@ -67,6 +67,11 @@ class EvaluationConfig:
     pixel_success_min_flip_fraction: float = 0.5
     pixel_threshold_mode: str = "clean_pixel_f1"
     qualitative_selection_basis: str = "image"
+    pixel_threshold_modes: tuple[str, ...] | None = None
+    output_roots_by_pixel_threshold_mode: dict[str, str] = field(default_factory=dict)
+    qualitative_output_roots_by_pixel_threshold_mode: dict[str, str] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if self.batch_size < 1:
@@ -83,19 +88,44 @@ class EvaluationConfig:
             raise ValueError("attack_scopes must select at least one scope")
         if not 0.0 <= self.pixel_success_min_flip_fraction <= 1.0:
             raise ValueError("pixel_success_min_flip_fraction must be in [0, 1]")
-        if self.pixel_threshold_mode not in {
+        valid_pixel_threshold_modes = {
             "fixed_0_5",
             "image_f1",
             "clean_pixel_f1",
-        }:
+        }
+        if self.pixel_threshold_mode not in valid_pixel_threshold_modes:
             raise ValueError(
                 "pixel_threshold_mode must be fixed_0_5, image_f1, or clean_pixel_f1"
             )
+        if self.pixel_threshold_modes is not None:
+            if not self.pixel_threshold_modes:
+                raise ValueError("pixel_threshold_modes must not be empty")
+            if len(set(self.pixel_threshold_modes)) != len(self.pixel_threshold_modes):
+                raise ValueError("pixel_threshold_modes must not contain duplicates")
+            unknown = set(self.pixel_threshold_modes) - valid_pixel_threshold_modes
+            if unknown:
+                raise ValueError(f"Unknown pixel threshold modes: {sorted(unknown)}")
+            expected = set(self.pixel_threshold_modes)
+            if set(self.output_roots_by_pixel_threshold_mode) != expected:
+                raise ValueError(
+                    "output_roots_by_pixel_threshold_mode must define every selected mode"
+                )
+            if self.save_qualitative_samples and set(
+                self.qualitative_output_roots_by_pixel_threshold_mode
+            ) != expected:
+                raise ValueError(
+                    "qualitative_output_roots_by_pixel_threshold_mode must define every "
+                    "selected mode when saving qualitative samples"
+                )
         if self.qualitative_selection_basis not in {"image", "target_region_pixel"}:
             raise ValueError(
                 "qualitative_selection_basis must be image or target_region_pixel"
             )
-        if self.save_qualitative_samples and not self.qualitative_output_root:
+        if (
+            self.save_qualitative_samples
+            and self.pixel_threshold_modes is None
+            and not self.qualitative_output_root
+        ):
             raise ValueError(
                 "qualitative_output_root is required when saving qualitative samples"
             )
@@ -777,19 +807,49 @@ def run_evaluation(config: EvaluationConfig) -> Path:
             raise ValueError(f"Requested conditions not found in manifest: {sorted(missing)}")
     if config.max_conditions is not None:
         artifacts = artifacts[: config.max_conditions]
-    output = Path(config.output_root).expanduser().resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    (output / "run_config.json").write_text(
-        json.dumps(_safe_config_dict(config), indent=2), encoding="utf-8"
+    modes = config.pixel_threshold_modes or (config.pixel_threshold_mode,)
+    mode_configs: dict[str, EvaluationConfig] = {}
+    outputs: dict[str, Path] = {}
+    category_rows: dict[str, list[dict[str, Any]]] = {}
+    summary_rows: dict[str, list[dict[str, Any]]] = {}
+    per_image_rows: dict[str, list[dict[str, Any]]] = {}
+    manifest_snapshot = json.dumps(
+        [json_safe_record(a.record) for a in artifacts], indent=2
     )
-    (output / "manifest_snapshot.json").write_text(
-        json.dumps([json_safe_record(a.record) for a in artifacts], indent=2),
-        encoding="utf-8",
-    )
-
-    category_rows: list[dict[str, Any]] = []
-    summary_rows: list[dict[str, Any]] = []
-    per_image_rows: list[dict[str, Any]] = []
+    for mode in modes:
+        output_root = (
+            config.output_roots_by_pixel_threshold_mode[mode]
+            if config.pixel_threshold_modes is not None
+            else config.output_root
+        )
+        qualitative_root = (
+            config.qualitative_output_roots_by_pixel_threshold_mode[mode]
+            if config.pixel_threshold_modes is not None
+            and config.save_qualitative_samples
+            else config.qualitative_output_root
+        )
+        mode_config = replace(
+            config,
+            output_root=output_root,
+            qualitative_output_root=qualitative_root,
+            pixel_threshold_mode=mode,
+            pixel_threshold_modes=None,
+            output_roots_by_pixel_threshold_mode={},
+            qualitative_output_roots_by_pixel_threshold_mode={},
+        )
+        mode_configs[mode] = mode_config
+        output = Path(output_root).expanduser().resolve()
+        outputs[mode] = output
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "run_config.json").write_text(
+            json.dumps(_safe_config_dict(mode_config), indent=2), encoding="utf-8"
+        )
+        (output / "manifest_snapshot.json").write_text(
+            manifest_snapshot, encoding="utf-8"
+        )
+        category_rows[mode] = []
+        summary_rows[mode] = []
+        per_image_rows[mode] = []
 
     groups: dict[tuple[str, int], list[AttackArtifact]] = {}
     for artifact in artifacts:
@@ -887,46 +947,48 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                 grouped: dict[str, list[EvaluationSample]] = {}
                 for sample in evaluation:
                     grouped.setdefault(sample.category, []).append(sample)
-                condition_category_rows: list[dict[str, Any]] = []
-                condition_per_image: list[dict[str, Any]] = []
-                for category, category_samples in sorted(grouped.items()):
-                    row, details = _metric_row(
-                        artifact,
-                        category,
-                        category_samples,
-                        clean_predictions,
-                        adversarial_predictions,
-                        actual_linf,
-                        config,
-                        category_thresholds,
+                for mode in modes:
+                    mode_config = mode_configs[mode]
+                    condition_category_rows: list[dict[str, Any]] = []
+                    condition_per_image: list[dict[str, Any]] = []
+                    for category, category_samples in sorted(grouped.items()):
+                        row, details = _metric_row(
+                            artifact,
+                            category,
+                            category_samples,
+                            clean_predictions,
+                            adversarial_predictions,
+                            actual_linf,
+                            mode_config,
+                            category_thresholds,
+                        )
+                        condition_category_rows.append(row)
+                        condition_per_image.extend(details)
+                    macro = _macro_row(
+                        artifact, condition_category_rows, config.model_name
                     )
-                    condition_category_rows.append(row)
-                    condition_per_image.extend(details)
-                macro = _macro_row(
-                    artifact, condition_category_rows, config.model_name
-                )
-                category_rows.extend(condition_category_rows)
-                summary_rows.append(macro)
-                per_image_rows.extend(condition_per_image)
+                    category_rows[mode].extend(condition_category_rows)
+                    summary_rows[mode].append(macro)
+                    per_image_rows[mode].extend(condition_per_image)
 
-                if config.save_qualitative_samples:
-                    export_representative_samples(
-                        config.qualitative_output_root,
-                        artifact.name,
-                        condition_per_image,
-                        {sample.protocol_id: sample for sample in evaluation},
-                        clean_predictions,
-                        adversarial_predictions,
-                        delta,
-                        delta_indices,
-                        image_size=image_size,
-                        anomaly_map_sigma=config.anomaly_map_sigma,
-                        selection_basis=config.qualitative_selection_basis,
-                    )
+                    if mode_config.save_qualitative_samples:
+                        export_representative_samples(
+                            mode_config.qualitative_output_root,
+                            artifact.name,
+                            condition_per_image,
+                            {sample.protocol_id: sample for sample in evaluation},
+                            clean_predictions,
+                            adversarial_predictions,
+                            delta,
+                            delta_indices,
+                            image_size=image_size,
+                            anomaly_map_sigma=config.anomaly_map_sigma,
+                            selection_basis=config.qualitative_selection_basis,
+                        )
 
                 if config.save_predictions:
                     _save_predictions(
-                        output / "predictions" / f"{artifact.name}.npz",
+                        outputs[modes[0]] / "predictions" / f"{artifact.name}.npz",
                         evaluation,
                         clean_predictions,
                         adversarial_predictions,
@@ -935,12 +997,14 @@ def run_evaluation(config: EvaluationConfig) -> Path:
                         config.prediction_map_size,
                     )
                 # Persist after every condition so long Kaggle runs retain progress.
-                _write_csv(output / "category_metrics.csv", category_rows)
-                _write_csv(output / "summary.csv", summary_rows)
-                _write_csv(output / "per_image.csv", per_image_rows)
+                for mode in modes:
+                    output = outputs[mode]
+                    _write_csv(output / "category_metrics.csv", category_rows[mode])
+                    _write_csv(output / "summary.csv", summary_rows[mode])
+                    _write_csv(output / "per_image.csv", per_image_rows[mode])
         finally:
             adapter.release()
 
-    summary_path = output / "summary.csv"
-    print(f"[done] Summary: {summary_path}")
-    return summary_path
+    for mode in modes:
+        print(f"[done] {mode} summary: {outputs[mode] / 'summary.csv'}")
+    return outputs[modes[0]] / "summary.csv"

@@ -190,56 +190,68 @@ def main() -> None:
     for setup_id in setup_ids:
         bundle, artifact_count, _ = validated[setup_id]
         selected_count = min(artifact_count, MAX_CONDITIONS) if MAX_CONDITIONS else artifact_count
+        mode_roots: dict[str, Path] = {}
+        numerical_roots: dict[str, str] = {}
+        qualitative_roots: dict[str, str] = {}
+        all_complete = True
         for threshold_mode in PIXEL_THRESHOLD_MODES:
             mode_root = OUTPUT / "setups" / setup_id / "evaluation" / threshold_mode
+            mode_roots[threshold_mode] = mode_root
             numerical = mode_root / "numerical"
             qualitative = mode_root / "visualizations"
+            numerical_roots[threshold_mode] = str(numerical)
+            qualitative_roots[threshold_mode] = str(qualitative)
             summary = numerical / "summary.csv"
             visualization_count = len(
                 list(qualitative.glob("*/selection_manifest.json"))
             ) if qualitative.is_dir() else 0
-            if (
+            complete = (
                 not OVERWRITE
                 and row_count(summary) == selected_count
                 and visualization_count == selected_count
-            ):
-                print(f"[reuse] {setup_id}/{threshold_mode}")
-                continue
-            print(f"===== EVALUATE {setup_id}/{threshold_mode} =====")
-            run_evaluation(
-                EvaluationConfig(
-                    artifacts_root=str(bundle),
-                    output_root=str(numerical),
-                    model_name="anomalyclip",
-                    model_kwargs_by_target=model_kwargs,
-                    thresholds_by_target=threshold_config,
-                    mvtec_root=str(MVTEC_ROOT),
-                    visa_root=str(VISA_ROOT),
-                    device="cuda",
-                    batch_size=int(os.environ.get("EVALUATION_BATCH_SIZE", "2")),
-                    metric_size=518,
-                    anomaly_map_sigma=4.0,
-                    aupro_fpr_limit=0.30,
-                    aupro_max_thresholds=200,
-                    verify_checksums=True,
-                    save_predictions=SAVE_PREDICTIONS,
-                    save_qualitative_samples=True,
-                    qualitative_output_root=str(qualitative),
-                    source_datasets=DATASETS,
-                    target_datasets=DATASETS,
-                    attack_scopes=("per_dataset",),
-                    max_conditions=MAX_CONDITIONS,
-                    pixel_success_min_flip_fraction=float(
-                        os.environ.get("PIXEL_SUCCESS_MIN_FLIP_FRACTION", "0.50")
-                    ),
-                    pixel_threshold_mode=threshold_mode,
-                    qualitative_selection_basis="target_region_pixel",
-                    run_notes=(
-                        f"Per-dataset ablation {setup_id}; pixel threshold "
-                        f"mode={threshold_mode}; visualizations are for debugging."
-                    ),
-                )
             )
+            all_complete = all_complete and complete
+        if all_complete:
+            print(f"[reuse] {setup_id}/all_threshold_modes")
+            continue
+        print(f"===== EVALUATE {setup_id}/ALL THRESHOLDS (SHARED INFERENCE) =====")
+        run_evaluation(
+            EvaluationConfig(
+                artifacts_root=str(bundle),
+                output_root=numerical_roots[PIXEL_THRESHOLD_MODES[0]],
+                model_name="anomalyclip",
+                model_kwargs_by_target=model_kwargs,
+                thresholds_by_target=threshold_config,
+                mvtec_root=str(MVTEC_ROOT),
+                visa_root=str(VISA_ROOT),
+                device="cuda",
+                batch_size=int(os.environ.get("EVALUATION_BATCH_SIZE", "2")),
+                metric_size=518,
+                anomaly_map_sigma=4.0,
+                aupro_fpr_limit=0.30,
+                aupro_max_thresholds=200,
+                verify_checksums=True,
+                save_predictions=SAVE_PREDICTIONS,
+                save_qualitative_samples=True,
+                qualitative_output_root=qualitative_roots[PIXEL_THRESHOLD_MODES[0]],
+                source_datasets=DATASETS,
+                target_datasets=DATASETS,
+                attack_scopes=("per_dataset",),
+                max_conditions=MAX_CONDITIONS,
+                pixel_success_min_flip_fraction=float(
+                    os.environ.get("PIXEL_SUCCESS_MIN_FLIP_FRACTION", "0.50")
+                ),
+                pixel_threshold_mode=PIXEL_THRESHOLD_MODES[0],
+                pixel_threshold_modes=PIXEL_THRESHOLD_MODES,
+                output_roots_by_pixel_threshold_mode=numerical_roots,
+                qualitative_output_roots_by_pixel_threshold_mode=qualitative_roots,
+                qualitative_selection_basis="target_region_pixel",
+                run_notes=(
+                    f"Per-dataset ablation {setup_id}; all pixel threshold modes "
+                    "share one inference pass; visualizations are for debugging."
+                ),
+            )
+        )
 
 
 if __name__ == "__main__":
