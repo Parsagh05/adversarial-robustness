@@ -53,6 +53,9 @@ REQUIRED_EVALUATION_FIELDS = {
     "label",
     "partition",
 }
+# ``loss_formulation`` is an optional manifest column: bundles generated before
+# the objective-family ablation existed used the cross-entropy formulation.
+DEFAULT_LOSS_FORMULATION = "ce_focal_dice"
 
 
 def sha256_file(path: Path) -> str:
@@ -132,21 +135,36 @@ class AttackArtifact:
     _attacked_ids: tuple[str, ...]
 
     @property
-    def key(self) -> tuple[str, str, str, str, str, str]:
+    def key(self) -> tuple[str, str, str, str, str, str, str]:
         return (
             str(self.record["source_dataset"]),
             str(self.record["target_dataset"]),
             str(self.record["direction"]),
             str(self.record["loss_mode"]),
+            str(self.record.get("loss_formulation") or DEFAULT_LOSS_FORMULATION),
             str(self.record["scope"]),
             str(self.record.get("category") or ""),
         )
 
     @property
     def name(self) -> str:
-        parts = list(self.key[:5])
-        if self.key[5]:
-            parts.append(self.key[5])
+        (
+            source,
+            target,
+            direction,
+            loss_mode,
+            loss_formulation,
+            scope,
+            category,
+        ) = self.key
+        # The default formulation is omitted so condition names, and therefore
+        # every existing result folder, keep their original form.
+        parts = [source, target, direction, loss_mode]
+        if loss_formulation != DEFAULT_LOSS_FORMULATION:
+            parts.append(loss_formulation)
+        parts.append(scope)
+        if category:
+            parts.append(category)
         return "__".join(parts)
 
     @property
@@ -249,6 +267,7 @@ def load_manifest(
     categories: Iterable[str] | None = None,
     directions: Iterable[str] | None = None,
     loss_modes: Iterable[str] | None = None,
+    loss_formulations: Iterable[str] | None = None,
 ) -> list[AttackArtifact]:
     """Load selected records from one bundle or the full Kaggle dataset root."""
 
@@ -261,9 +280,12 @@ def load_manifest(
     category_filter = set(categories) if categories is not None else None
     direction_filter = set(directions) if directions is not None else None
     loss_filter = set(loss_modes) if loss_modes is not None else None
+    formulation_filter = (
+        set(loss_formulations) if loss_formulations is not None else None
+    )
 
     artifacts: list[AttackArtifact] = []
-    seen: set[tuple[str, str, str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str, str]] = set()
     for forced_scope, bundle_root in _bundle_roots(root_path, selected_scopes):
         manifest_rows = _read_csv(
             bundle_root / MANIFEST_NAME, REQUIRED_MANIFEST_FIELDS
@@ -283,6 +305,9 @@ def load_manifest(
             source = raw["source_dataset"]
             target = raw["target_dataset"]
             category = raw.get("category", "").strip()
+            loss_formulation = (
+                raw.get("loss_formulation", "").strip() or DEFAULT_LOSS_FORMULATION
+            )
             if source_filter is not None and source not in source_filter:
                 continue
             if target_filter is not None and target not in target_filter:
@@ -292,6 +317,11 @@ def load_manifest(
             if direction_filter is not None and raw["direction"] not in direction_filter:
                 continue
             if loss_filter is not None and raw["loss_mode"] not in loss_filter:
+                continue
+            if (
+                formulation_filter is not None
+                and loss_formulation not in formulation_filter
+            ):
                 continue
             if scope != "per_dataset" and not category:
                 raise ValueError(f"Manifest row {index} requires a category for {scope}")
@@ -349,6 +379,7 @@ def load_manifest(
                 {
                     "scope": scope,
                     "category": category,
+                    "loss_formulation": loss_formulation,
                     "source_label": source_label,
                     "target_label": target_label,
                     "evaluation_attacked_image_count": expected_attacked,

@@ -27,6 +27,11 @@ case "$DATASETS" in
   *) echo "DATASETS must be mvtec, visa, or mvtec,visa" >&2; exit 2 ;;
 esac
 case "$RUN_PHASE" in all|generate|evaluate) ;; *) echo "RUN_PHASE must be all, generate, or evaluate" >&2; exit 2 ;; esac
+case "$LOSS_FORMULATIONS" in
+  ce_focal_dice|margin_topk|ce_focal_dice,margin_topk|margin_topk,ce_focal_dice) ;;
+  *) echo "LOSS_FORMULATIONS must be ce_focal_dice, margin_topk, or both" >&2; exit 2 ;;
+esac
+IFS=',' read -r -a FORMULATIONS <<< "$LOSS_FORMULATIONS"
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 export PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -102,14 +107,19 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "generate" ]]; then
     if [[ "${SMOKE_TEST,,}" == "true" ]]; then
       steps="$SMOKE_STEPS"
     fi
-    setup_root="$RESULTS_ROOT/setups/$id"
-    echo "===== GENERATE datasets=$DATASETS $id: steps=$steps epsilon=$epsilon ====="
-    OUTPUT_BASE="$setup_root/attack_generation" \
-    GENERATION_DATASETS="$DATASETS" \
-    PER_DATASET_STEPS="$steps" \
-    EPSILON="$epsilon" \
-    RUN_PER_DATASET=true RUN_PER_CATEGORY=false RUN_PER_IMAGE=false \
-      bash "$ROOT/generation/train.sh"
+    # One bundle per loss formulation. Generation rewrites attack_manifest.csv
+    # for the whole bundle it writes into, so a run restricted to one
+    # formulation must not share a folder with the other one.
+    for formulation in "${FORMULATIONS[@]}"; do
+      echo "===== GENERATE datasets=$DATASETS $id/$formulation: steps=$steps epsilon=$epsilon ====="
+      OUTPUT_BASE="$RESULTS_ROOT/setups/$id/$formulation/attack_generation" \
+      GENERATION_DATASETS="$DATASETS" \
+      PER_DATASET_STEPS="$steps" \
+      EPSILON="$epsilon" \
+      LOSS_FORMULATIONS="$formulation" \
+      RUN_PER_DATASET=true RUN_PER_CATEGORY=false RUN_PER_IMAGE=false \
+        bash "$ROOT/generation/train.sh"
+    done
   done
 fi
 

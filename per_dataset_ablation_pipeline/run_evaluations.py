@@ -15,7 +15,11 @@ from evaluation import (
     run_evaluation,
 )
 from evaluation.universal_eval.artifacts import load_manifest
-from path_contract import bundle_path, ensure_bundle_protocol_files
+from path_contract import (
+    bundle_path,
+    ensure_bundle_protocol_files,
+    evaluation_mode_root,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -43,6 +47,24 @@ DATASETS = tuple(
 )
 if not DATASETS or len(set(DATASETS)) != len(DATASETS) or set(DATASETS) - {"mvtec", "visa"}:
     raise ValueError("DATASETS must contain mvtec, visa, or both exactly once")
+VALID_LOSS_FORMULATIONS = ("ce_focal_dice", "margin_topk")
+LOSS_FORMULATIONS = tuple(
+    value.strip()
+    for value in os.environ.get(
+        "LOSS_FORMULATIONS", ",".join(VALID_LOSS_FORMULATIONS)
+    ).split(",")
+    if value.strip()
+)
+if (
+    not LOSS_FORMULATIONS
+    or len(set(LOSS_FORMULATIONS)) != len(LOSS_FORMULATIONS)
+    or set(LOSS_FORMULATIONS) - set(VALID_LOSS_FORMULATIONS)
+):
+    raise ValueError(
+        "LOSS_FORMULATIONS must contain ce_focal_dice, margin_topk, or both "
+        "exactly once"
+    )
+LOSS_MODES_PER_CONDITION = 6  # 2 directions x 3 loss modes
 
 SETUPS = {
     "steps500_eps2": (500, 2 / 255),
@@ -65,15 +87,15 @@ def selected_setup_ids() -> list[str]:
     return requested
 
 
-def bundle_for(setup_id: str) -> Path:
-    return bundle_path(OUTPUT, setup_id)
+def bundle_for(setup_id: str, loss_formulation: str) -> Path:
+    return bundle_path(OUTPUT, setup_id, loss_formulation)
 
 
-def validate_bundle(setup_id: str) -> tuple[Path, int, str]:
+def validate_bundle(setup_id: str, loss_formulation: str) -> tuple[Path, int, str]:
     expected_steps, expected_epsilon = SETUPS[setup_id]
     if SMOKE:
         expected_steps = int(os.environ.get("SMOKE_STEPS", "2"))
-    bundle = bundle_for(setup_id)
+    bundle = bundle_for(setup_id, loss_formulation)
     for repaired in ensure_bundle_protocol_files(bundle):
         print(f"[repair] copied protocol CSV into bundle: {repaired}")
     artifacts = load_manifest(
@@ -81,19 +103,24 @@ def validate_bundle(setup_id: str) -> tuple[Path, int, str]:
         scopes=("per_dataset",),
         sources=DATASETS,
         targets=DATASETS,
+        loss_formulations=(loss_formulation,),
         verify_files=True,
     )
-    expected_artifacts = 6 * len(DATASETS) * len(DATASETS)
+    # One bundle holds exactly one loss formulation.
+    expected_artifacts = LOSS_MODES_PER_CONDITION * len(DATASETS) * len(DATASETS)
     if len(artifacts) != expected_artifacts:
         raise RuntimeError(
-            f"{setup_id} has {len(artifacts)} manifest rows; expected {expected_artifacts}"
+            f"{setup_id}/{loss_formulation} has {len(artifacts)} manifest rows; "
+            f"expected {expected_artifacts}"
         )
     protocol_hashes = {
         str(artifact.record.get("protocol_split_sha256", ""))
         for artifact in artifacts
     }
     if len(protocol_hashes) != 1 or not next(iter(protocol_hashes)):
-        raise RuntimeError(f"{setup_id} does not have one consistent protocol hash")
+        raise RuntimeError(
+            f"{setup_id}/{loss_formulation} does not have one consistent protocol hash"
+        )
     for artifact in artifacts:
         if int(artifact.record.get("optimization_steps", -1)) != expected_steps:
             raise RuntimeError(f"Unexpected step count in {artifact.name}")
@@ -114,8 +141,15 @@ def row_count(path: Path) -> int:
 
 
 def main() -> None:
-    setup_ids = selected_setup_ids()
-    validated = {setup_id: validate_bundle(setup_id) for setup_id in setup_ids}
+    # One condition per (setup, loss formulation): each has its own bundle and
+    # its own evaluation tree, so a run restricted to one formulation cannot
+    # read the other one's summary and declare itself complete.
+    conditions = [
+        (setup_id, formulation)
+        for setup_id in selected_setup_ids()
+        for formulation in LOSS_FORMULATIONS
+    ]
+    validated = {condition: validate_bundle(*condition) for condition in conditions}
     protocol_hashes = {record[2] for record in validated.values()}
     if len(protocol_hashes) != 1:
         raise RuntimeError("Selected setups do not use the same train/evaluation split")
@@ -160,8 +194,13 @@ def main() -> None:
         or not thresholds_match_protocol
         or not all(path.is_file() for path in threshold_paths.values())
     ):
-        first_setup = setup_ids[0]
-        evaluation_index = validated[first_setup][0] / "evaluation_test_indices.csv"
+        # Clean-image thresholds depend only on the protocol split, so every
+        # setup and formulation shares one calibration.
+        first_setup, first_formulation = conditions[0]
+        evaluation_index = (
+            validated[(first_setup, first_formulation)][0]
+            / "evaluation_test_indices.csv"
+        )
         print("===== CALIBRATE CLEAN IMAGE F1-MAX THRESHOLDS =====")
         calibrate_thresholds(
             ThresholdCalibrationConfig(
@@ -187,15 +226,17 @@ def main() -> None:
     threshold_config = {
         dataset: str(path) for dataset, path in threshold_paths.items()
     }
-    for setup_id in setup_ids:
-        bundle, artifact_count, _ = validated[setup_id]
+    for setup_id, formulation in conditions:
+        bundle, artifact_count, _ = validated[(setup_id, formulation)]
         selected_count = min(artifact_count, MAX_CONDITIONS) if MAX_CONDITIONS else artifact_count
         mode_roots: dict[str, Path] = {}
         numerical_roots: dict[str, str] = {}
         qualitative_roots: dict[str, str] = {}
         all_complete = True
         for threshold_mode in PIXEL_THRESHOLD_MODES:
-            mode_root = OUTPUT / "setups" / setup_id / "evaluation" / threshold_mode
+            mode_root = evaluation_mode_root(
+                OUTPUT, setup_id, formulation, threshold_mode
+            )
             mode_roots[threshold_mode] = mode_root
             numerical = mode_root / "numerical"
             qualitative = mode_root / "visualizations"
@@ -212,9 +253,12 @@ def main() -> None:
             )
             all_complete = all_complete and complete
         if all_complete:
-            print(f"[reuse] {setup_id}/all_threshold_modes")
+            print(f"[reuse] {setup_id}/{formulation}/all_threshold_modes")
             continue
-        print(f"===== EVALUATE {setup_id}/ALL THRESHOLDS (SHARED INFERENCE) =====")
+        print(
+            f"===== EVALUATE {setup_id}/{formulation}/ALL THRESHOLDS "
+            "(SHARED INFERENCE) ====="
+        )
         run_evaluation(
             EvaluationConfig(
                 artifacts_root=str(bundle),
@@ -237,6 +281,7 @@ def main() -> None:
                 source_datasets=DATASETS,
                 target_datasets=DATASETS,
                 attack_scopes=("per_dataset",),
+                attack_loss_formulations=(formulation,),
                 max_conditions=MAX_CONDITIONS,
                 pixel_success_min_flip_fraction=float(
                     os.environ.get("PIXEL_SUCCESS_MIN_FLIP_FRACTION", "0.50")
@@ -247,8 +292,9 @@ def main() -> None:
                 qualitative_output_roots_by_pixel_threshold_mode=qualitative_roots,
                 qualitative_selection_basis="target_region_pixel",
                 run_notes=(
-                    f"Per-dataset ablation {setup_id}; all pixel threshold modes "
-                    "share one inference pass; visualizations are for debugging."
+                    f"Per-dataset ablation {setup_id}; loss formulation "
+                    f"{formulation}; all pixel threshold modes share one "
+                    "inference pass; visualizations are for debugging."
                 ),
             )
         )

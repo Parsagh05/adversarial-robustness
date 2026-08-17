@@ -32,6 +32,19 @@ LOCAL_FOCAL_GAMMA="${LOCAL_FOCAL_GAMMA:-2.0}"
 LOCAL_DICE_SMOOTH="${LOCAL_DICE_SMOOTH:-1.0}"
 LOCAL_BACKGROUND_WEIGHT="${LOCAL_BACKGROUND_WEIGHT:-0.1}"
 
+# Objective families to ablate: ce_focal_dice, margin_topk, or both. Both
+# doubles generation and evaluation time. ce_focal_dice is the mask-aware
+# cross-entropy/focal/soft-Dice loss; margin_topk maximizes or minimizes the
+# abnormal-minus-normal logit margin and its TopK anomaly map, without a target
+# region and without ground-truth masks.
+LOSS_FORMULATIONS="${LOSS_FORMULATIONS:-ce_focal_dice,margin_topk}"
+# K for TopK(H), as a fraction of the patch tokens (37x37 = 1369 at 518px with
+# the ViT-L/14 surrogate). Planting a fake defect needs a smaller region than
+# suppressing a real one, so K is set per direction: 20% (274 tokens) when
+# attacking normal images and 40% (548 tokens) when attacking anomalous ones.
+MARGIN_TOPK_FRACTION_NORMAL_TO_ABNORMAL="${MARGIN_TOPK_FRACTION_NORMAL_TO_ABNORMAL:-0.20}"
+MARGIN_TOPK_FRACTION_ABNORMAL_TO_NORMAL="${MARGIN_TOPK_FRACTION_ABNORMAL_TO_NORMAL:-0.40}"
+
 # A target-region image is a pixel success when this fraction of eligible
 # region pixels crosses the selected pixel threshold.
 PIXEL_SUCCESS_MIN_FLIP_FRACTION="${PIXEL_SUCCESS_MIN_FLIP_FRACTION:-0.50}"

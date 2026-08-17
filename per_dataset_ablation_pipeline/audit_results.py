@@ -7,10 +7,13 @@ import csv
 import os
 from pathlib import Path
 
+from path_contract import setup_root
+
 
 OUTPUT = Path(
     os.environ.get("RESULTS_ROOT") or os.environ["PIPELINE_OUTPUT"]
 ).expanduser().resolve()
+DEFAULT_LOSS_FORMULATION = "ce_focal_dice"
 SETUP_META = {
     "steps500_eps2": (500, "2/255"),
     "steps500_eps4": (500, "4/255"),
@@ -23,6 +26,7 @@ KEEP = (
     "target_dataset",
     "direction",
     "loss_mode",
+    "loss_formulation",
     "category",
     "clean_i_auroc",
     "adversarial_i_auroc",
@@ -41,24 +45,51 @@ KEEP = (
 )
 
 
+def condition_dirs(setup_id: str) -> list[tuple[str, Path]]:
+    """Return every (loss formulation, root) pair present for one setup.
+
+    The formulations on disk are discovered rather than read from the
+    environment, so a table built after a run restricted to one formulation
+    still includes the other one's earlier results.
+    """
+
+    root = setup_root(OUTPUT, setup_id)
+    if not root.is_dir():
+        return []
+    conditions = [
+        (child.name, child)
+        for child in sorted(root.iterdir())
+        if child.is_dir() and (child / "evaluation").is_dir()
+    ]
+    if (root / "evaluation").is_dir():
+        # Layout used before the formulation became part of the path.
+        conditions.append((DEFAULT_LOSS_FORMULATION, root))
+    return conditions
+
+
 def main() -> None:
     combined: list[dict[str, str | int]] = []
     for setup_id, (steps, epsilon) in SETUP_META.items():
-        for mode in MODES:
-            path = OUTPUT / "setups" / setup_id / "evaluation" / mode / "numerical" / "summary.csv"
-            if not path.is_file():
-                continue
-            with path.open(newline="", encoding="utf-8-sig") as handle:
-                for row in csv.DictReader(handle):
-                    combined.append(
-                        {
+        for formulation, condition_root in condition_dirs(setup_id):
+            for mode in MODES:
+                path = condition_root / "evaluation" / mode / "numerical" / "summary.csv"
+                if not path.is_file():
+                    continue
+                with path.open(newline="", encoding="utf-8-sig") as handle:
+                    for row in csv.DictReader(handle):
+                        record: dict[str, str | int] = {
                             "setup": setup_id,
                             "steps": steps,
                             "epsilon": epsilon,
                             "pixel_threshold_mode": mode,
                             **{field: row.get(field, "") for field in KEEP},
                         }
-                    )
+                        # Summaries written before the ablation axis existed
+                        # have no formulation column; the folder is the record.
+                        record["loss_formulation"] = (
+                            row.get("loss_formulation") or formulation
+                        )
+                        combined.append(record)
     if not combined:
         print("No completed evaluation summaries yet.")
         return

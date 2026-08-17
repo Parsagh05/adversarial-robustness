@@ -54,8 +54,43 @@ class TargetedPGD:
         mode: str,
         spatial_masks: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
+        """Evaluate the configured objective family for one batch."""
+
         if mode not in VALID_LOSS_MODES:
             raise ValueError(f"Unknown loss mode: {mode}")
+        formulation = self.config.loss_formulation
+        if formulation == "ce_focal_dice":
+            return self._ce_focal_dice_losses(
+                global_features,
+                patch_features,
+                categories,
+                target_label,
+                mode,
+                spatial_masks=spatial_masks,
+            )
+        if formulation == "margin_topk":
+            # The relaxed margin objective never fixes where the fake abnormal
+            # region has to appear, so masks are deliberately unused here.
+            return self._margin_topk_losses(
+                global_features,
+                patch_features,
+                categories,
+                target_label,
+                mode,
+            )
+        raise ValueError(f"Unknown loss formulation: {formulation}")
+
+    def _ce_focal_dice_losses(
+        self,
+        global_features: torch.Tensor,
+        patch_features: Sequence[torch.Tensor],
+        categories: Sequence[str],
+        target_label: int,
+        mode: str,
+        spatial_masks: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Cross-entropy plus mask-aware focal and soft-Dice segmentation loss."""
+
         total_global = global_features.new_zeros(())
         total_local = global_features.new_zeros(())
         total_local_focal = global_features.new_zeros(())
@@ -216,6 +251,107 @@ class TargetedPGD:
             # segmentation-aware objective used for optimization.
             result["local_focal"] = total_local_focal / group_count
             result["local_dice"] = total_local_dice / group_count
+        if mode == "global":
+            result["total"] = result["global"]
+        elif mode == "local":
+            result["total"] = result["local"]
+        else:
+            result["total"] = (
+                self.config.global_weight * result["global"]
+                + self.config.local_weight * result["local"]
+            )
+        return result
+
+    def _margin_topk_losses(
+        self,
+        global_features: torch.Tensor,
+        patch_features: Sequence[torch.Tensor],
+        categories: Sequence[str],
+        target_label: int,
+        mode: str,
+    ) -> Dict[str, torch.Tensor]:
+        """Signed logit-margin and TopK anomaly-map objective.
+
+        With ``s(x) = z_a(x) - z_n(x)``, a normal-source attack maximizes ``s``
+        and an anomalous-source attack minimizes it. The dense term applies the
+        same rule to ``TopK(H(x))``, where ``H`` is the per-patch-token margin
+        map. Nothing constrains *where* the K selected tokens are, so no target
+        region and no ground-truth mask is required. PGD minimizes ``total``, so
+        the maximize case is expressed as a negated margin.
+        """
+
+        # target_label == 1 attacks towards "abnormal", which means maximizing
+        # the margin; the sign converts that into the minimized objective.
+        direction_sign = -1.0 if target_label == 1 else 1.0
+        total_global = global_features.new_zeros(())
+        total_local = global_features.new_zeros(())
+        total_global_margin = global_features.new_zeros(())
+        total_local_topk = global_features.new_zeros(())
+        group_count = 0
+
+        for category in sorted(set(categories)):
+            indices = [
+                index for index, value in enumerate(categories) if value == category
+            ]
+            index_tensor = torch.as_tensor(
+                indices, device=self.device, dtype=torch.long
+            )
+            bank = self.surrogate.prompts[category]
+
+            if mode in {"global", "combined"}:
+                global_logits = ensemble_class_logits(
+                    global_features.index_select(0, index_tensor),
+                    bank,
+                    self.config.temperature,
+                )
+                margin = (global_logits[..., 1] - global_logits[..., 0]).mean()
+                total_global_margin = total_global_margin + margin
+                total_global = total_global + direction_sign * margin
+
+            if mode in {"local", "combined"}:
+                layer_maps = []
+                for patch in patch_features:
+                    selected = patch.index_select(0, index_tensor)
+                    # The first token is CLS; the anomaly map covers patches only.
+                    if selected.shape[1] > 1:
+                        selected = selected[:, 1:, :]
+                    token_logits = ensemble_class_logits(
+                        selected, bank, self.config.temperature
+                    )
+                    layer_maps.append(token_logits[..., 1] - token_logits[..., 0])
+                if not layer_maps:
+                    raise RuntimeError("The surrogate returned no patch features")
+                token_counts = {int(layer_map.shape[1]) for layer_map in layer_maps}
+                if len(token_counts) != 1:
+                    raise ValueError(
+                        "The TopK anomaly map requires one token count across "
+                        f"layers, got {sorted(token_counts)}"
+                    )
+                token_count = token_counts.pop()
+                # H(x): per-token margins averaged over the captured layers, in
+                # the same way the target model aggregates its layer maps.
+                anomaly_map = torch.stack(layer_maps).mean(dim=0)
+                top_k = max(
+                    1,
+                    min(
+                        token_count,
+                        int(round(self.config.margin_topk_fraction * token_count)),
+                    ),
+                )
+                per_image_topk = anomaly_map.topk(top_k, dim=1).values.mean(dim=1)
+                topk_loss = per_image_topk.mean()
+                total_local_topk = total_local_topk + topk_loss
+                total_local = total_local + direction_sign * topk_loss
+            group_count += 1
+
+        result: Dict[str, torch.Tensor] = {}
+        if mode in {"global", "combined"}:
+            result["global"] = total_global / group_count
+            # Unsigned diagnostics: the raw margin and TopK values being moved.
+            result["global_margin"] = total_global_margin / group_count
+        if mode in {"local", "combined"}:
+            result["local"] = total_local / group_count
+            result["local_topk"] = total_local_topk / group_count
         if mode == "global":
             result["total"] = result["global"]
         elif mode == "local":
@@ -583,6 +719,12 @@ class TargetedPGD:
                     ),
                     "diagnostic_local_dice": diagnostic_losses.get(
                         "local_dice", float("nan")
+                    ),
+                    "diagnostic_global_margin": diagnostic_losses.get(
+                        "global_margin", float("nan")
+                    ),
+                    "diagnostic_local_topk": diagnostic_losses.get(
+                        "local_topk", float("nan")
                     ),
                 }
             history.append(step_record)

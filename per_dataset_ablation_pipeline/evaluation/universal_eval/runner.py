@@ -61,6 +61,7 @@ class EvaluationConfig:
     attack_categories: tuple[str, ...] | None = None
     attack_directions: tuple[str, ...] | None = None
     attack_loss_modes: tuple[str, ...] | None = None
+    attack_loss_formulations: tuple[str, ...] | None = None
     condition_names: tuple[str, ...] | None = None
     max_conditions: int | None = None
     run_notes: str = ""
@@ -450,6 +451,7 @@ def _metric_row(
             "source_label": int(artifact.record["source_label"]),
             "target_label": target_label,
             "loss_mode": artifact.record["loss_mode"],
+            "loss_formulation": artifact.record["loss_formulation"],
             "scope": artifact.record["scope"],
             "sample_id": sample.protocol_id,
             "category": sample.category,
@@ -565,6 +567,7 @@ def _metric_row(
         "target_dataset": artifact.record["target_dataset"],
         "direction": artifact.record["direction"],
         "loss_mode": artifact.record["loss_mode"],
+        "loss_formulation": artifact.record["loss_formulation"],
         "scope": artifact.record["scope"],
         "category": category,
         "sample_count": len(samples),
@@ -632,6 +635,7 @@ def _macro_row(artifact: AttackArtifact, rows: list[dict[str, Any]], model: str)
         "target_dataset": artifact.record["target_dataset"],
         "direction": artifact.record["direction"],
         "loss_mode": artifact.record["loss_mode"],
+        "loss_formulation": artifact.record["loss_formulation"],
         "scope": artifact.record["scope"],
         "pixel_threshold_mode": rows[0]["pixel_threshold_mode"] if rows else "",
         "category": "macro",
@@ -798,6 +802,7 @@ def run_evaluation(config: EvaluationConfig) -> Path:
         categories=config.attack_categories,
         directions=config.attack_directions,
         loss_modes=config.attack_loss_modes,
+        loss_formulations=config.attack_loss_formulations,
     )
     if config.condition_names is not None:
         selected = set(config.condition_names)

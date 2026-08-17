@@ -11,6 +11,12 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 VALID_SCOPES = ("per_image", "per_category", "dataset")
 VALID_DIRECTIONS = ("normal_to_abnormal", "abnormal_to_normal")
 VALID_LOSS_MODES = ("global", "local", "combined")
+# Objective families. ``ce_focal_dice`` is the original cross-entropy plus
+# mask-aware focal/soft-Dice objective. ``margin_topk`` optimizes the signed
+# abnormal-minus-normal logit margin and, for the dense modes, the TopK of the
+# resulting anomaly map, so it never constrains where the fake region appears
+# and never reads a ground-truth mask.
+VALID_LOSS_FORMULATIONS = ("ce_focal_dice", "margin_topk")
 VALID_STEP_SIZE_SCHEDULES = ("constant", "cosine")
 VALID_NORMAL_LOCAL_TARGETS = ("fixed_region", "full_image")
 VALID_UNIVERSAL_PROTOCOLS = ("transductive", "held_out")
@@ -56,6 +62,13 @@ class AttackConfig:
     local_dice_weight: float = 0.5
     local_focal_gamma: float = 2.0
     local_dice_smooth: float = 1.0
+    # ``loss_formulation`` selects the objective family that this instance
+    # optimizes; ``loss_formulations`` declares the sweep the run covers.
+    loss_formulation: str = "ce_focal_dice"
+    # K for TopK(H) as a fraction of the patch tokens. The generator sets this
+    # per direction, because planting a fake defect needs a smaller region than
+    # suppressing a real one; see MARGIN_TOPK_FRACTION_* in the pipeline config.
+    margin_topk_fraction: float = 0.20
     step_size_schedule: str = "constant"
     step_size_min_ratio: float = 0.1
     diagnostic_interval: int = 10
@@ -63,6 +76,7 @@ class AttackConfig:
     scopes: Tuple[str, ...] = VALID_SCOPES
     directions: Tuple[str, ...] = VALID_DIRECTIONS
     loss_modes: Tuple[str, ...] = VALID_LOSS_MODES
+    loss_formulations: Tuple[str, ...] = VALID_LOSS_FORMULATIONS
     per_image_batch_size: int = 1
     universal_batch_size: int = 2
     seed: int = 111
@@ -72,6 +86,7 @@ class AttackConfig:
         self.scopes = _tuple(self.scopes)
         self.directions = _tuple(self.directions)
         self.loss_modes = _tuple(self.loss_modes)
+        self.loss_formulations = _tuple(self.loss_formulations)
         if self.image_size <= 0:
             raise ValueError("image_size must be positive")
         if not 0.0 < self.epsilon <= 1.0:
@@ -88,6 +103,7 @@ class AttackConfig:
             (self.scopes, VALID_SCOPES, "scopes"),
             (self.directions, VALID_DIRECTIONS, "directions"),
             (self.loss_modes, VALID_LOSS_MODES, "loss_modes"),
+            (self.loss_formulations, VALID_LOSS_FORMULATIONS, "loss_formulations"),
         ):
             if not value:
                 raise ValueError(f"{name} cannot be empty")
@@ -122,6 +138,14 @@ class AttackConfig:
             raise ValueError("local_focal_gamma cannot be negative")
         if self.local_dice_smooth <= 0:
             raise ValueError("local_dice_smooth must be positive")
+        self.loss_formulation = str(self.loss_formulation)
+        if self.loss_formulation not in VALID_LOSS_FORMULATIONS:
+            raise ValueError(
+                "loss_formulation must be one of "
+                f"{VALID_LOSS_FORMULATIONS}, got {self.loss_formulation!r}"
+            )
+        if not 0.0 < self.margin_topk_fraction <= 1.0:
+            raise ValueError("margin_topk_fraction must be in (0, 1]")
         self.step_size_schedule = str(self.step_size_schedule)
         if self.step_size_schedule not in VALID_STEP_SIZE_SCHEDULES:
             raise ValueError(

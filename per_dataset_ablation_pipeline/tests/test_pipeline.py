@@ -43,6 +43,26 @@ class AblationPipelineTests(unittest.TestCase):
                 output_roots_by_pixel_threshold_mode={"fixed_0_5": "out/fixed"},
             )
 
+    def test_loss_formulation_filter_is_accepted_and_defaults_to_every_family(
+        self,
+    ) -> None:
+        both = EvaluationConfig(
+            artifacts_root="artifacts",
+            output_root="output",
+            model_name="model",
+            model_kwargs_by_target={},
+        )
+        self.assertIsNone(both.attack_loss_formulations)
+
+        margin_only = EvaluationConfig(
+            artifacts_root="artifacts",
+            output_root="output",
+            model_name="model",
+            model_kwargs_by_target={},
+            attack_loss_formulations=("margin_topk",),
+        )
+        self.assertEqual(margin_only.attack_loss_formulations, ("margin_topk",))
+
     def test_region_success_does_not_count_outside_pixels(self) -> None:
         clean = np.zeros((3, 3), dtype=np.float32)
         adversarial = np.ones((3, 3), dtype=np.float32)

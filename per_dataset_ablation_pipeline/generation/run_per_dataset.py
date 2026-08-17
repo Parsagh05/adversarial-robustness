@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """Generate source-dataset universal CLIP perturbations without split leakage.
 
-For each attack-training fraction, exactly six deltas are optimized on MVTec and
-six on VisA (2 directions x 3 losses). A delta is optimized once from its source
-dataset and can then be evaluated on either target dataset. Target anomaly
-models are never loaded here.
+For each attack-training fraction and each selected loss formulation, exactly
+six deltas are optimized on MVTec and six on VisA (2 directions x 3 loss
+modes). A delta is optimized once from its source dataset and can then be
+evaluated on either target dataset. Target anomaly models are never loaded here.
 """
 from __future__ import annotations
 
 import gc
 import hashlib
+import itertools
 import math
 import os
 import random
 import shutil
 import subprocess
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Dict
 
@@ -41,7 +43,7 @@ if not ANOMALYCLIP_ROOT.exists():
     raise FileNotFoundError(ANOMALYCLIP_ROOT)
 
 from adversarial_harness.attacks import TargetedPGD, direction_labels
-from adversarial_harness.config import AttackConfig
+from adversarial_harness.config import AttackConfig, VALID_LOSS_FORMULATIONS
 from adversarial_harness.dataset import (
     MVTecSample,
     discover_anomaly_datasets,
@@ -113,6 +115,24 @@ LOCAL_DICE_WEIGHT = float(os.environ.get("LOCAL_DICE_WEIGHT", "0.5"))
 LOCAL_FOCAL_GAMMA = float(os.environ.get("LOCAL_FOCAL_GAMMA", "2.0"))
 LOCAL_DICE_SMOOTH = float(os.environ.get("LOCAL_DICE_SMOOTH", "1.0"))
 LOCAL_BACKGROUND_WEIGHT = float(os.environ.get("LOCAL_BACKGROUND_WEIGHT", "0.1"))
+# K for TopK(H), per attack direction and as a fraction of the patch tokens.
+# Planting a fake defect only needs a small region to look abnormal, while
+# suppressing a real defect has to push down everything the map already ranks
+# highly, so the anomalous-source attack uses the larger K.
+MARGIN_TOPK_FRACTIONS = {
+    "normal_to_abnormal": float(
+        os.environ.get("MARGIN_TOPK_FRACTION_NORMAL_TO_ABNORMAL", "0.20")
+    ),
+    "abnormal_to_normal": float(
+        os.environ.get("MARGIN_TOPK_FRACTION_ABNORMAL_TO_NORMAL", "0.40")
+    ),
+}
+for direction_name, fraction_value in MARGIN_TOPK_FRACTIONS.items():
+    if not 0.0 < fraction_value <= 1.0:
+        raise ValueError(
+            f"MARGIN_TOPK_FRACTION for {direction_name} must be in (0, 1], "
+            f"got {fraction_value}"
+        )
 NORMAL_LOCAL_TARGET = os.environ.get("NORMAL_LOCAL_TARGET", "fixed_region")
 NORMAL_TARGET_REGION_FRACTION = float(os.environ.get("NORMAL_TARGET_REGION_FRACTION", "0.25"))
 NORMAL_TARGET_CENTER_X = float(os.environ.get("NORMAL_TARGET_CENTER_X", "0.5"))
@@ -122,12 +142,20 @@ STEP_SIZE_MIN_RATIO = float(os.environ.get("STEP_SIZE_MIN_RATIO", "0.1"))
 DIAGNOSTIC_INTERVAL = int(os.environ.get("DIAGNOSTIC_INTERVAL", "10"))
 SEED = int(os.environ.get("ATTACK_SEED", "111"))
 OVERWRITE_EXISTING = bool_env("OVERWRITE_EXISTING", False)
+# Editing attacks.py changes attack_code_sha256 and therefore invalidates every
+# previously generated delta. Enable this only to keep already-published deltas
+# when the edit provably does not touch their objective.
+ALLOW_ATTACK_CODE_DRIFT = bool_env("ALLOW_ATTACK_CODE_DRIFT", False)
 TRAIN_FRACTIONS = parse_fraction_list(
     os.environ.get("PER_DATASET_ATTACK_TRAIN_FRACTIONS", "1.0"),
     name="PER_DATASET_ATTACK_TRAIN_FRACTIONS",
 )
 DIRECTIONS = csv_tuple("DIRECTIONS", "normal_to_abnormal,abnormal_to_normal")
 LOSS_MODES = csv_tuple("LOSS_MODES", "global,local,combined")
+# Objective families to sweep. ce_focal_dice is the original loss; margin_topk
+# is the relaxed abnormal-minus-normal margin / TopK anomaly-map loss.
+LOSS_FORMULATIONS = csv_tuple("LOSS_FORMULATIONS", ",".join(VALID_LOSS_FORMULATIONS))
+DEFAULT_LOSS_FORMULATION = VALID_LOSS_FORMULATIONS[0]
 DATASETS = generation_datasets()
 DISCOVERY_MODE = DATASETS[0] if len(DATASETS) == 1 else "both"
 for dataset_name, dataset_root in (("mvtec", MVTEC_ROOT), ("visa", VISA_ROOT)):
@@ -138,6 +166,14 @@ if set(DIRECTIONS) != {"normal_to_abnormal", "abnormal_to_normal"}:
     raise ValueError(f"Unexpected DIRECTIONS: {DIRECTIONS}")
 if set(LOSS_MODES) != {"global", "local", "combined"}:
     raise ValueError(f"Unexpected LOSS_MODES: {LOSS_MODES}")
+if len(set(LOSS_FORMULATIONS)) != len(LOSS_FORMULATIONS):
+    raise ValueError(f"LOSS_FORMULATIONS repeats a value: {LOSS_FORMULATIONS}")
+unknown_formulations = sorted(set(LOSS_FORMULATIONS) - set(VALID_LOSS_FORMULATIONS))
+if not LOSS_FORMULATIONS or unknown_formulations:
+    raise ValueError(
+        f"LOSS_FORMULATIONS must be a non-empty subset of {VALID_LOSS_FORMULATIONS}, "
+        f"got {LOSS_FORMULATIONS}"
+    )
 
 OUTPUT_ROOT = OUTPUT_BASE / "canonical_clip_per_dataset_segmentation_loss_v2"
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -145,10 +181,20 @@ CLIP_CACHE = WORKING / "clip_cache"
 CLIP_CACHE.mkdir(parents=True, exist_ok=True)
 os.environ["ANOMALYCLIP_CLIP_CACHE"] = str(CLIP_CACHE)
 
+OPTIMIZATION_RUNS_PER_FRACTION = (
+    len(DATASETS) * len(DIRECTIONS) * len(LOSS_MODES) * len(LOSS_FORMULATIONS)
+)
+
 print("GPU:", torch.cuda.get_device_name(0))
 print("Protocol SHA256:", split_sha256())
 print("Attack-train fractions:", TRAIN_FRACTIONS)
-print("Expected optimization runs:", len(DATASETS) * len(TRAIN_FRACTIONS) * len(DIRECTIONS) * len(LOSS_MODES))
+print("Loss formulations:", LOSS_FORMULATIONS)
+if "margin_topk" in LOSS_FORMULATIONS:
+    print("TopK(H) fractions by direction:", MARGIN_TOPK_FRACTIONS)
+print(
+    "Expected optimization runs:",
+    len(TRAIN_FRACTIONS) * OPTIMIZATION_RUNS_PER_FRACTION,
+)
 print("Important: each source delta is optimized once and referenced by both target datasets.")
 
 all_discovered = discover_anomaly_datasets(
@@ -179,7 +225,13 @@ def mask_loader(sample: MVTecSample) -> torch.Tensor:
     return torch.from_numpy(load_mask(sample, IMAGE_SIZE)).float()
 
 
-def artifact_path(source_dataset: str, fraction: float, direction: str, loss_mode: str):
+def artifact_path(
+    source_dataset: str,
+    fraction: float,
+    direction: str,
+    loss_mode: str,
+    loss_formulation: str,
+):
     root = (
         OUTPUT_ROOT
         / "noises"
@@ -187,14 +239,44 @@ def artifact_path(source_dataset: str, fraction: float, direction: str, loss_mod
         / fraction_tag(fraction)
         / "perturbations"
     )
-    return root / f"dataset__{direction}__{loss_mode}.pt"
+    # The default formulation keeps the original filenames so existing bundles
+    # stay addressable; only the added formulation extends the name.
+    stem = f"dataset__{direction}__{loss_mode}"
+    if loss_formulation != DEFAULT_LOSS_FORMULATION:
+        stem = f"{stem}__{loss_formulation}"
+    return root / f"{stem}.pt"
+
+
+# Bundles produced before the loss-formulation ablation existed record neither
+# key; they are, by construction, the default cross-entropy formulation.
+LEGACY_METADATA_DEFAULTS = {
+    "loss_formulation": DEFAULT_LOSS_FORMULATION,
+    "global_objective": "target_class_cross_entropy",
+}
+DRIFT_TOLERANT_KEYS = ("attack_code_sha256",)
 
 
 def reusable(pt_path: Path, expected: Dict) -> bool:
     if OVERWRITE_EXISTING or not pt_path.is_file():
         return False
     metadata = torch.load(pt_path, map_location="cpu", weights_only=False)["metadata"]
-    return all(metadata.get(key) == value for key, value in expected.items())
+    mismatched = sorted(
+        key
+        for key, value in expected.items()
+        if metadata.get(key, LEGACY_METADATA_DEFAULTS.get(key)) != value
+    )
+    if not mismatched:
+        return True
+    if ALLOW_ATTACK_CODE_DRIFT and set(mismatched) <= set(DRIFT_TOLERANT_KEYS):
+        print(
+            f"[warning] ALLOW_ATTACK_CODE_DRIFT reuses {pt_path.name} despite "
+            f"{mismatched} mismatch: recorded attack_code_sha256="
+            f"{metadata.get('attack_code_sha256')}, current={ATTACK_CODE_SHA256}. "
+            "This delta was optimized by different attack code and keeps its "
+            "recorded provenance hash."
+        )
+        return True
+    return False
 
 
 attack_config = AttackConfig(
@@ -224,6 +306,7 @@ attack_config = AttackConfig(
     scopes=("dataset",),
     directions=DIRECTIONS,
     loss_modes=LOSS_MODES,
+    loss_formulations=LOSS_FORMULATIONS,
     per_image_batch_size=1,
     universal_batch_size=UNIVERSAL_BATCH_SIZE,
     seed=SEED,
@@ -261,8 +344,19 @@ for source_dataset in DATASETS:
                     raise RuntimeError(
                         f"No attack_train images for {source_dataset}/{fraction}/{direction}"
                     )
-                for loss_mode in LOSS_MODES:
-                    pt_path = artifact_path(source_dataset, fraction, direction, loss_mode)
+                for loss_mode, loss_formulation in itertools.product(
+                    LOSS_MODES, LOSS_FORMULATIONS
+                ):
+                    margin_formulation = loss_formulation == "margin_topk"
+                    margin_topk_fraction = MARGIN_TOPK_FRACTIONS[direction]
+                    condition_config = replace(
+                        attack_config,
+                        loss_formulation=loss_formulation,
+                        margin_topk_fraction=margin_topk_fraction,
+                    )
+                    pt_path = artifact_path(
+                        source_dataset, fraction, direction, loss_mode, loss_formulation
+                    )
                     pt_path.parent.mkdir(parents=True, exist_ok=True)
                     expected = {
                         "format_version": "canonical_clip_per_dataset_segmentation_loss_v2",
@@ -270,6 +364,7 @@ for source_dataset in DATASETS:
                         "scope": "dataset",
                         "direction": direction,
                         "loss_mode": loss_mode,
+                        "loss_formulation": loss_formulation,
                         "attack_train_fraction": fraction,
                         "epsilon": EPSILON,
                         "step_size": STEP_SIZE,
@@ -283,7 +378,16 @@ for source_dataset in DATASETS:
                         "anomalyclip_loader_commit": ANOMALYCLIP_COMMIT,
                         "generator_script_sha256": GENERATOR_SCRIPT_SHA256,
                         "attack_code_sha256": ATTACK_CODE_SHA256,
-                        "local_objective": "target_class_focal_plus_soft_dice",
+                        "global_objective": (
+                            "abnormal_minus_normal_margin"
+                            if margin_formulation
+                            else "target_class_cross_entropy"
+                        ),
+                        "local_objective": (
+                            "topk_anomaly_map_margin"
+                            if margin_formulation
+                            else "target_class_focal_plus_soft_dice"
+                        ),
                         "local_focal_weight": LOCAL_FOCAL_WEIGHT,
                         "local_dice_weight": LOCAL_DICE_WEIGHT,
                         "local_focal_gamma": LOCAL_FOCAL_GAMMA,
@@ -298,17 +402,30 @@ for source_dataset in DATASETS:
                         "diagnostic_interval": DIAGNOSTIC_INTERVAL,
                         "checkpoint_selection_partition": "full_attack_train",
                     }
+                    # K only changes the objective for the margin formulation, so
+                    # it gates reuse there and stays absent everywhere else.
+                    if margin_formulation:
+                        expected["margin_topk_fraction"] = margin_topk_fraction
                     if reusable(pt_path, expected):
-                        print(f"[reuse] {source_dataset}/{fraction_tag(fraction)}/{direction}/{loss_mode}")
+                        print(
+                            f"[reuse] {source_dataset}/{fraction_tag(fraction)}/{direction}"
+                            f"/{loss_mode}/{loss_formulation}"
+                        )
                         metadata = torch.load(pt_path, map_location="cpu", weights_only=False)["metadata"]
                     else:
                         print(
                             f"[generate] source={source_dataset} fraction={fraction:.2f} "
-                            f"direction={direction} loss={loss_mode} train={len(source_train)}"
+                            f"direction={direction} loss={loss_mode} "
+                            f"formulation={loss_formulation} train={len(source_train)}"
                         )
-                        run_seed = condition_seed(SEED, source_dataset, fraction, direction, loss_mode)
+                        # Non-default formulations extend the seed material so the
+                        # published cross-entropy deltas stay bit-reproducible.
+                        seed_parts = [source_dataset, fraction, direction, loss_mode]
+                        if loss_formulation != DEFAULT_LOSS_FORMULATION:
+                            seed_parts.append(loss_formulation)
+                        run_seed = condition_seed(SEED, *seed_parts)
                         seed_everything(run_seed)
-                        attacker = TargetedPGD(surrogate, attack_config)
+                        attacker = TargetedPGD(surrogate, condition_config)
                         bar = tqdm(total=UNIVERSAL_STEPS, desc="PGD", unit="step")
 
                         def progress(step, total, metrics):
@@ -322,12 +439,16 @@ for source_dataset in DATASETS:
                                 postfix["full_train"] = f"{fixed:.6f}"
                             bar.set_postfix(postfix)
 
+                        uses_masks = (
+                            not margin_formulation
+                            and loss_mode in {"local", "combined"}
+                        )
                         result = attacker.optimize_universal(
                             source_train,
                             image_loader,
                             target_label,
                             loss_mode,
-                            mask_loader=(mask_loader if loss_mode in {"local", "combined"} else None),
+                            mask_loader=(mask_loader if uses_masks else None),
                             diagnostic_samples=source_train,
                             progress=progress,
                         )
@@ -350,6 +471,7 @@ for source_dataset in DATASETS:
                             "run_seed": run_seed,
                             "source_label": source_label,
                             "target_label": target_label,
+                            "uses_ground_truth_masks": uses_masks,
                             "attack_generator": "frozen_public_CLIP_surrogate",
                             "target_model_access_during_optimization": False,
                             "target_model_training_or_finetuning": False,
@@ -429,6 +551,10 @@ for row in artifact_rows:
             "source_label": row["source_label"],
             "target_label": row["target_label"],
             "loss_mode": row["loss_mode"],
+            # Legacy artifacts predate the ablation axis and are the default.
+            "loss_formulation": row.get(
+                "loss_formulation", DEFAULT_LOSS_FORMULATION
+            ),
             "attack_train_fraction": row["attack_train_fraction"],
             "attack_train_image_count": row["attack_train_sample_count"],
             "evaluation_attacked_image_count": len(attacked_eval_ids),
@@ -444,7 +570,11 @@ for row in artifact_rows:
             "epsilon": EPSILON,
             "step_size": STEP_SIZE,
             "optimization_steps": UNIVERSAL_STEPS,
+            "global_objective": row.get(
+                "global_objective", LEGACY_METADATA_DEFAULTS["global_objective"]
+            ),
             "local_objective": row["local_objective"],
+            "margin_topk_fraction": row.get("margin_topk_fraction", ""),
             "local_focal_weight": row["local_focal_weight"],
             "local_dice_weight": row["local_dice_weight"],
             "local_focal_gamma": row["local_focal_gamma"],
@@ -463,7 +593,14 @@ for row in artifact_rows:
 
 attack_manifest_path = OUTPUT_ROOT / "attack_manifest.csv"
 pd.DataFrame(delivery_rows).sort_values(
-    ["attack_train_fraction", "source_dataset", "target_dataset", "direction", "loss_mode"]
+    [
+        "attack_train_fraction",
+        "source_dataset",
+        "target_dataset",
+        "direction",
+        "loss_mode",
+        "loss_formulation",
+    ]
 ).to_csv(attack_manifest_path, index=False)
 diagnostics_path = OUTPUT_ROOT / "optimization_diagnostics.csv"
 pd.DataFrame([
@@ -473,6 +610,8 @@ pd.DataFrame([
         "category": "",
         "direction": row["direction"],
         "loss_mode": row["loss_mode"],
+        "loss_formulation": row.get("loss_formulation", DEFAULT_LOSS_FORMULATION),
+        "margin_topk_fraction": row.get("margin_topk_fraction", ""),
         "initial_total_loss": row["initial_losses"]["total"],
         "final_total_loss": row["final_losses"]["total"],
         "total_loss_reduction": row["loss_reduction"]["total"],
@@ -480,6 +619,10 @@ pd.DataFrame([
         "final_local_focal": row["final_losses"].get("local_focal", ""),
         "initial_local_dice": row["initial_losses"].get("local_dice", ""),
         "final_local_dice": row["final_losses"].get("local_dice", ""),
+        "initial_global_margin": row["initial_losses"].get("global_margin", ""),
+        "final_global_margin": row["final_losses"].get("global_margin", ""),
+        "initial_local_topk": row["initial_losses"].get("local_topk", ""),
+        "final_local_topk": row["final_losses"].get("local_topk", ""),
         "selected_step": row["selected_step"],
         "checkpoint_selection_partition": row["checkpoint_selection_partition"],
         "checkpoint_selection_image_count": len(row["diagnostic_sample_ids"]),
@@ -514,8 +657,14 @@ for delivery in delivery_rows:
         raise RuntimeError(f"Manifest checksum mismatch: {recorded_noise}")
 
 dataset_archive_tag = "" if len(DATASETS) > 1 else f"_{DATASETS[0]}"
+formulation_archive_tag = (
+    ""
+    if tuple(LOSS_FORMULATIONS) == (DEFAULT_LOSS_FORMULATION,)
+    else "_" + "_".join(LOSS_FORMULATIONS)
+)
 archive_path = OUTPUT_BASE / (
-    f"canonical_clip_per_dataset{dataset_archive_tag}_segmentation_loss_v2.zip"
+    f"canonical_clip_per_dataset{dataset_archive_tag}"
+    f"_segmentation_loss_v2{formulation_archive_tag}.zip"
 )
 if archive_path.exists():
     archive_path.unlink()
@@ -549,5 +698,8 @@ if missing_archive_names:
 
 print("\nPer-dataset optimization artifacts:", len(artifact_rows))
 print("Per-dataset evaluation manifest rows:", len(delivery_rows))
-print("Expected: optimizations = 12 x number_of_fractions; evaluations = 24 x number_of_fractions")
+print(
+    f"Expected: optimizations = {OPTIMIZATION_RUNS_PER_FRACTION} x number_of_fractions; "
+    f"evaluations = {OPTIMIZATION_RUNS_PER_FRACTION * len(DATASETS)} x number_of_fractions"
+)
 print("ZIP:", archive_path)
