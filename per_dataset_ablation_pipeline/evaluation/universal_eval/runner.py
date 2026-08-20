@@ -26,6 +26,7 @@ from .datasets import (
 from .metrics import (
     binary_classification_metrics,
     image_metrics,
+    location_free_topk_pixel_metrics,
     pixel_metrics,
     resize_anomaly_maps,
     targeted_attack_metrics,
@@ -66,6 +67,7 @@ class EvaluationConfig:
     max_conditions: int | None = None
     run_notes: str = ""
     pixel_success_min_flip_fraction: float = 0.5
+    location_free_topk_fraction: float = 0.20
     pixel_threshold_mode: str = "clean_pixel_f1"
     qualitative_selection_basis: str = "image"
     pixel_threshold_modes: tuple[str, ...] | None = None
@@ -89,6 +91,8 @@ class EvaluationConfig:
             raise ValueError("attack_scopes must select at least one scope")
         if not 0.0 <= self.pixel_success_min_flip_fraction <= 1.0:
             raise ValueError("pixel_success_min_flip_fraction must be in [0, 1]")
+        if not 0.0 < self.location_free_topk_fraction <= 1.0:
+            raise ValueError("location_free_topk_fraction must be in (0, 1]")
         valid_pixel_threshold_modes = {
             "fixed_0_5",
             "image_f1",
@@ -118,9 +122,15 @@ class EvaluationConfig:
                     "qualitative_output_roots_by_pixel_threshold_mode must define every "
                     "selected mode when saving qualitative samples"
                 )
-        if self.qualitative_selection_basis not in {"image", "target_region_pixel"}:
+        if self.qualitative_selection_basis not in {
+            "image",
+            "target_region_pixel",
+            "location_free_topk_pixel",
+            "direction_aware_pixel",
+        }:
             raise ValueError(
-                "qualitative_selection_basis must be image or target_region_pixel"
+                "qualitative_selection_basis must be image, target_region_pixel, "
+                "location_free_topk_pixel, or direction_aware_pixel"
             )
         if (
             self.save_qualitative_samples
@@ -470,6 +480,7 @@ def _metric_row(
             "pixel_decision_threshold": pixel_threshold,
             "clean_pixel_f1_threshold": clean_pixel_f1_threshold,
             "pixel_threshold_mode": config.pixel_threshold_mode,
+            "location_free_topk_fraction": config.location_free_topk_fraction,
             "normal_local_target": str(
                 artifact.record.get("normal_local_target") or "full_image"
             ),
@@ -496,6 +507,27 @@ def _metric_row(
                     minimum_flip_fraction=config.pixel_success_min_flip_fraction,
                 )
             )
+            if target_label == 1:
+                detail.update(
+                    location_free_topk_pixel_metrics(
+                        clean_maps[index],
+                        adversarial_maps[index],
+                        threshold=pixel_threshold,
+                        topk_fraction=config.location_free_topk_fraction,
+                        minimum_flip_fraction=config.pixel_success_min_flip_fraction,
+                    )
+                )
+            else:
+                detail.update(
+                    {
+                        "location_free_topk_pixel_count": 0,
+                        "location_free_topk_pixel_eligible_count": 0,
+                        "location_free_topk_pixel_flip_count": 0,
+                        "location_free_topk_pixel_flip_rate": float("nan"),
+                        "location_free_topk_pixel_success_eligible": 0,
+                        "location_free_topk_pixel_attack_success": 0,
+                    }
+                )
         else:
             detail.update(
                 {
@@ -505,6 +537,12 @@ def _metric_row(
                     "target_region_pixel_flip_rate": float("nan"),
                     "target_region_pixel_success_eligible": 0,
                     "target_region_pixel_attack_success": 0,
+                    "location_free_topk_pixel_count": 0,
+                    "location_free_topk_pixel_eligible_count": 0,
+                    "location_free_topk_pixel_flip_count": 0,
+                    "location_free_topk_pixel_flip_rate": float("nan"),
+                    "location_free_topk_pixel_success_eligible": 0,
+                    "location_free_topk_pixel_attack_success": 0,
                 }
             )
         if (
@@ -552,6 +590,23 @@ def _metric_row(
         int(row["target_region_pixel_attack_success"])
         for row in pixel_success_eligible_rows
     )
+    location_free_eligible_rows = [
+        row
+        for row in attacked_rows
+        if row["location_free_topk_pixel_success_eligible"]
+    ]
+    location_free_eligible_count = sum(
+        int(row["location_free_topk_pixel_eligible_count"])
+        for row in attacked_rows
+    )
+    location_free_flip_count = sum(
+        int(row["location_free_topk_pixel_flip_count"])
+        for row in attacked_rows
+    )
+    location_free_success_count = sum(
+        int(row["location_free_topk_pixel_attack_success"])
+        for row in location_free_eligible_rows
+    )
 
     def attacked_mean(field: str) -> float:
         return (
@@ -587,6 +642,7 @@ def _metric_row(
         "clean_pixel_f1_threshold": clean_pixel_f1_threshold,
         "pixel_threshold_mode": config.pixel_threshold_mode,
         "pixel_success_min_flip_fraction": config.pixel_success_min_flip_fraction,
+        "location_free_topk_fraction": config.location_free_topk_fraction,
         "target_region_pixel_eligible_count": pixel_eligible_count,
         "target_region_pixel_flip_count": pixel_flip_count,
         "target_region_pixel_flip_rate": (
@@ -601,6 +657,22 @@ def _metric_row(
         "target_region_pixel_attack_success_rate": (
             100.0 * pixel_success_count / len(pixel_success_eligible_rows)
             if pixel_success_eligible_rows
+            else float("nan")
+        ),
+        "location_free_topk_pixel_eligible_count": location_free_eligible_count,
+        "location_free_topk_pixel_flip_count": location_free_flip_count,
+        "location_free_topk_pixel_flip_rate": (
+            100.0 * location_free_flip_count / location_free_eligible_count
+            if location_free_eligible_count
+            else float("nan")
+        ),
+        "location_free_topk_pixel_success_eligible_count": len(
+            location_free_eligible_rows
+        ),
+        "location_free_topk_pixel_success_count": location_free_success_count,
+        "location_free_topk_pixel_attack_success_rate": (
+            100.0 * location_free_success_count / len(location_free_eligible_rows)
+            if location_free_eligible_rows
             else float("nan")
         ),
         "mean_actual_linf": attacked_mean("actual_linf"),
@@ -652,6 +724,8 @@ def _macro_row(artifact: AttackArtifact, rows: list[dict[str, Any]], model: str)
         "clean_pixel_f1_threshold",
         "target_region_pixel_flip_rate",
         "target_region_pixel_attack_success_rate",
+        "location_free_topk_pixel_flip_rate",
+        "location_free_topk_pixel_attack_success_rate",
         "mean_actual_linf",
     ] + [
         f"{prefix}_{metric}"
@@ -688,13 +762,46 @@ def _macro_row(artifact: AttackArtifact, rows: list[dict[str, Any]], model: str)
         base["pixel_success_min_flip_fraction"] = rows[0][
             "pixel_success_min_flip_fraction"
         ]
+        base["location_free_topk_fraction"] = rows[0][
+            "location_free_topk_fraction"
+        ]
         for count_field in (
             "target_region_pixel_eligible_count",
             "target_region_pixel_flip_count",
             "target_region_pixel_success_eligible_count",
             "target_region_pixel_success_count",
+            "location_free_topk_pixel_eligible_count",
+            "location_free_topk_pixel_flip_count",
+            "location_free_topk_pixel_success_eligible_count",
+            "location_free_topk_pixel_success_count",
         ):
             base[count_field] = sum(int(row[count_field]) for row in rows)
+        # The unqualified rates above are category-macro means. Publish both
+        # explicit macro and count-weighted micro variants for comparisons.
+        base["location_free_topk_pixel_flip_rate_macro"] = base[
+            "location_free_topk_pixel_flip_rate"
+        ]
+        base["location_free_topk_pixel_attack_success_rate_macro"] = base[
+            "location_free_topk_pixel_attack_success_rate"
+        ]
+        eligible_pixels = base["location_free_topk_pixel_eligible_count"]
+        eligible_images = base[
+            "location_free_topk_pixel_success_eligible_count"
+        ]
+        base["location_free_topk_pixel_flip_rate_micro"] = (
+            100.0
+            * base["location_free_topk_pixel_flip_count"]
+            / eligible_pixels
+            if eligible_pixels
+            else float("nan")
+        )
+        base["location_free_topk_pixel_attack_success_rate_micro"] = (
+            100.0
+            * base["location_free_topk_pixel_success_count"]
+            / eligible_images
+            if eligible_images
+            else float("nan")
+        )
     return base
 
 

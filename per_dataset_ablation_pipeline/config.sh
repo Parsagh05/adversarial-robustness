@@ -48,6 +48,9 @@ MARGIN_TOPK_FRACTION_ABNORMAL_TO_NORMAL="${MARGIN_TOPK_FRACTION_ABNORMAL_TO_NORM
 # A target-region image is a pixel success when this fraction of eligible
 # region pixels crosses the selected pixel threshold.
 PIXEL_SUCCESS_MIN_FLIP_FRACTION="${PIXEL_SUCCESS_MIN_FLIP_FRACTION:-0.50}"
+# For normal->abnormal, also score the strongest anomaly pixels anywhere in
+# the image. The same fraction is used for both loss formulations.
+LOCATION_FREE_TOPK_FRACTION="${LOCATION_FREE_TOPK_FRACTION:-0.20}"
 EVALUATION_BATCH_SIZE="${EVALUATION_BATCH_SIZE:-2}"
 SAVE_PREDICTIONS="${SAVE_PREDICTIONS:-false}"
 OVERWRITE_EXISTING="${OVERWRITE_EXISTING:-false}"

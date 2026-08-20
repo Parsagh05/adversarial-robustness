@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 from pathlib import Path
@@ -140,6 +141,30 @@ def row_count(path: Path) -> int:
         return sum(1 for _ in csv.DictReader(handle))
 
 
+def has_location_free_metrics(path: Path, expected_fraction: float) -> bool:
+    if not path.is_file():
+        return False
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        columns = set(next(csv.reader(handle), []))
+    if not {
+        "location_free_topk_fraction",
+        "location_free_topk_pixel_flip_rate_macro",
+        "location_free_topk_pixel_flip_rate_micro",
+        "location_free_topk_pixel_attack_success_rate_macro",
+        "location_free_topk_pixel_attack_success_rate_micro",
+    } <= columns:
+        return False
+    config_path = path.parent / "run_config.json"
+    if not config_path.is_file():
+        return False
+    recorded = json.loads(config_path.read_text(encoding="utf-8"))
+    return math.isclose(
+        float(recorded.get("location_free_topk_fraction", float("nan"))),
+        expected_fraction,
+        abs_tol=1e-12,
+    )
+
+
 def main() -> None:
     # One condition per (setup, loss formulation): each has its own bundle and
     # its own evaluation tree, so a run restricted to one formulation cannot
@@ -233,6 +258,9 @@ def main() -> None:
         numerical_roots: dict[str, str] = {}
         qualitative_roots: dict[str, str] = {}
         all_complete = True
+        location_free_topk_fraction = float(
+            os.environ.get("LOCATION_FREE_TOPK_FRACTION", "0.20")
+        )
         for threshold_mode in PIXEL_THRESHOLD_MODES:
             mode_root = evaluation_mode_root(
                 OUTPUT, setup_id, formulation, threshold_mode
@@ -249,6 +277,7 @@ def main() -> None:
             complete = (
                 not OVERWRITE
                 and row_count(summary) == selected_count
+                and has_location_free_metrics(summary, location_free_topk_fraction)
                 and visualization_count == selected_count
             )
             all_complete = all_complete and complete
@@ -286,15 +315,18 @@ def main() -> None:
                 pixel_success_min_flip_fraction=float(
                     os.environ.get("PIXEL_SUCCESS_MIN_FLIP_FRACTION", "0.50")
                 ),
+                location_free_topk_fraction=location_free_topk_fraction,
                 pixel_threshold_mode=PIXEL_THRESHOLD_MODES[0],
                 pixel_threshold_modes=PIXEL_THRESHOLD_MODES,
                 output_roots_by_pixel_threshold_mode=numerical_roots,
                 qualitative_output_roots_by_pixel_threshold_mode=qualitative_roots,
-                qualitative_selection_basis="target_region_pixel",
+                qualitative_selection_basis="direction_aware_pixel",
                 run_notes=(
                     f"Per-dataset ablation {setup_id}; loss formulation "
                     f"{formulation}; all pixel threshold modes share one "
-                    "inference pass; visualizations are for debugging."
+                    "inference pass; normal-to-abnormal adds location-free Top-K "
+                    "pixel success while abnormal-to-normal keeps GT-mask success; "
+                    "visualizations are for debugging."
                 ),
             )
         )

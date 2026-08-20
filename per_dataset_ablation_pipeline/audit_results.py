@@ -41,6 +41,13 @@ KEEP = (
     "clean_pixel_f1_threshold",
     "target_region_pixel_flip_rate",
     "target_region_pixel_attack_success_rate",
+    "location_free_topk_fraction",
+    "location_free_topk_pixel_flip_rate",
+    "location_free_topk_pixel_attack_success_rate",
+    "location_free_topk_pixel_flip_rate_macro",
+    "location_free_topk_pixel_flip_rate_micro",
+    "location_free_topk_pixel_attack_success_rate_macro",
+    "location_free_topk_pixel_attack_success_rate_micro",
     "mean_actual_linf",
 )
 

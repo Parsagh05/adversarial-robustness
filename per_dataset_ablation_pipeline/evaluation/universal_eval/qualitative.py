@@ -15,10 +15,27 @@ from scipy.ndimage import gaussian_filter
 import torch
 
 from .datasets import EvaluationSample, load_image, load_mask
-from .metrics import resize_anomaly_maps
+from .metrics import location_free_topk_region, resize_anomaly_maps
 
 
 Prediction = tuple[float, np.ndarray]
+
+
+def _resolved_selection_basis(
+    rows: list[dict[str, Any]], selection_basis: str
+) -> str:
+    if selection_basis != "direction_aware_pixel":
+        return selection_basis
+    target_labels = {int(row["target_label"]) for row in rows}
+    if len(target_labels) != 1:
+        raise ValueError(
+            "direction_aware_pixel selection requires one attack direction"
+        )
+    return (
+        "location_free_topk_pixel"
+        if target_labels == {1}
+        else "target_region_pixel"
+    )
 
 
 def select_representative_rows(
@@ -28,6 +45,7 @@ def select_representative_rows(
 ) -> list[tuple[str, dict[str, Any]]]:
     """Select strongest/median successes and the worst eligible failure."""
 
+    selection_basis = _resolved_selection_basis(rows, selection_basis)
     if selection_basis == "image":
         eligible_field = "targeted_success_eligible"
         success_field = "targeted_attack_success"
@@ -36,8 +54,15 @@ def select_representative_rows(
         eligible_field = "target_region_pixel_success_eligible"
         success_field = "target_region_pixel_attack_success"
         strength_field = "target_region_pixel_flip_rate"
+    elif selection_basis == "location_free_topk_pixel":
+        eligible_field = "location_free_topk_pixel_success_eligible"
+        success_field = "location_free_topk_pixel_attack_success"
+        strength_field = "location_free_topk_pixel_flip_rate"
     else:
-        raise ValueError("selection_basis must be image or target_region_pixel")
+        raise ValueError(
+            "selection_basis must be image, target_region_pixel, "
+            "location_free_topk_pixel, or direction_aware_pixel"
+        )
     eligible = [row for row in rows if int(row.get(eligible_field, 0))]
     successes = sorted(
         (row for row in eligible if int(row[success_field])),
@@ -191,6 +216,18 @@ def _sample_metrics(
     return metrics
 
 
+def _finite_json(value: Any) -> Any:
+    """Replace non-finite diagnostic values with JSON null."""
+
+    if isinstance(value, dict):
+        return {key: _finite_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_json(item) for item in value]
+    if isinstance(value, (float, np.floating)) and not math.isfinite(float(value)):
+        return None
+    return value
+
+
 def export_representative_samples(
     output_root: str | Path,
     condition: str,
@@ -215,6 +252,7 @@ def export_representative_samples(
         shutil.rmtree(condition_root)
     condition_root.mkdir(parents=True, exist_ok=True)
     manifest: list[dict[str, Any]] = []
+    resolved_basis = _resolved_selection_basis(rows, selection_basis)
     for selection, row in select_representative_rows(
         rows, selection_basis=selection_basis
     ):
@@ -265,7 +303,7 @@ def export_representative_samples(
         clean_pixel_prediction = clean_map >= pixel_threshold
         adversarial_pixel_prediction = adversarial_map >= pixel_threshold
         target_region = _target_region_from_row(row, ground_truth)
-        successful_flips = (
+        successful_target_flips = (
             target_region
             & (clean_pixel_prediction == int(row["source_label"]))
             & (adversarial_pixel_prediction == int(row["target_label"]))
@@ -280,9 +318,26 @@ def export_representative_samples(
         Image.fromarray((target_region * 255).astype(np.uint8)).save(
             folder / "target_region_mask.png"
         )
-        Image.fromarray((successful_flips * 255).astype(np.uint8)).save(
+        Image.fromarray((successful_target_flips * 255).astype(np.uint8)).save(
             folder / "successful_target_pixel_flips.png"
         )
+        if int(row["target_label"]) == 1:
+            location_free_region = location_free_topk_region(
+                adversarial_map,
+                topk_fraction=float(row["location_free_topk_fraction"]),
+            )
+            successful_location_free_flips = (
+                location_free_region
+                & (clean_pixel_prediction == int(row["source_label"]))
+                & (adversarial_pixel_prediction == int(row["target_label"]))
+                & (clean_pixel_prediction != adversarial_pixel_prediction)
+            )
+            Image.fromarray((location_free_region * 255).astype(np.uint8)).save(
+                folder / "location_free_topk_region_mask.png"
+            )
+            Image.fromarray(
+                (successful_location_free_flips * 255).astype(np.uint8)
+            ).save(folder / "successful_location_free_topk_pixel_flips.png")
         Image.fromarray(_difference_colormap(adversarial_map - clean_map)).save(
             folder / "heatmap_difference.png"
         )
@@ -295,7 +350,8 @@ def export_representative_samples(
             selection=selection,
         )
         (folder / "metrics.json").write_text(
-            json.dumps(metrics, indent=2, allow_nan=False), encoding="utf-8"
+            json.dumps(_finite_json(metrics), indent=2, allow_nan=False),
+            encoding="utf-8",
         )
         manifest.append(
             {
@@ -306,14 +362,26 @@ def export_representative_samples(
                 "target_region_pixel_flip_rate": float(
                     row["target_region_pixel_flip_rate"]
                 ),
+                "location_free_topk_pixel_flip_rate": (
+                    float(row["location_free_topk_pixel_flip_rate"])
+                    if int(row["target_label"]) == 1
+                    else None
+                ),
             }
         )
-    if selection_basis == "target_region_pixel":
+    if resolved_basis == "target_region_pixel":
         eligible_field = "target_region_pixel_success_eligible"
         success_field = "target_region_pixel_attack_success"
         ranking = (
             "Strongest and median successes use target-region pixel flip rate; "
             "worst failure uses the smallest target-region pixel flip rate."
+        )
+    elif resolved_basis == "location_free_topk_pixel":
+        eligible_field = "location_free_topk_pixel_success_eligible"
+        success_field = "location_free_topk_pixel_attack_success"
+        ranking = (
+            "Strongest and median successes use location-free Top-K pixel flip "
+            "rate; worst failure uses the smallest location-free rate."
         )
     else:
         eligible_field = "targeted_success_eligible"
@@ -327,7 +395,7 @@ def export_representative_samples(
     selected_names = {record["selection"] for record in manifest}
     selection_manifest = {
         "condition": condition,
-        "selection_basis": selection_basis,
+        "selection_basis": resolved_basis,
         "ranking": ranking,
         "eligible_count": eligible_count,
         "success_count": success_count,

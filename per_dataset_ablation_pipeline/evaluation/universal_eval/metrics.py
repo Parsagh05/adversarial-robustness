@@ -279,6 +279,74 @@ def targeted_region_pixel_metrics(
     }
 
 
+def location_free_topk_region(
+    adversarial_map: np.ndarray, *, topk_fraction: float
+) -> np.ndarray:
+    """Select the strongest anomaly-score pixels without fixing a location."""
+
+    scores = np.asarray(adversarial_map, dtype=np.float32)
+    if scores.ndim != 2:
+        raise ValueError("Location-free Top-K expects one two-dimensional anomaly map")
+    if not np.isfinite(scores).all():
+        raise ValueError("The adversarial anomaly map must be finite")
+    if not 0.0 < topk_fraction <= 1.0:
+        raise ValueError("topk_fraction must be in (0, 1]")
+    pixel_count = scores.size
+    top_k = max(1, min(pixel_count, int(round(topk_fraction * pixel_count))))
+    flat_indices = np.argpartition(scores.reshape(-1), pixel_count - top_k)[-top_k:]
+    region = np.zeros(pixel_count, dtype=bool)
+    region[flat_indices] = True
+    return region.reshape(scores.shape)
+
+
+def location_free_topk_pixel_metrics(
+    clean_map: np.ndarray,
+    adversarial_map: np.ndarray,
+    *,
+    threshold: float,
+    topk_fraction: float,
+    minimum_flip_fraction: float = 0.5,
+) -> dict[str, float | int]:
+    """Measure normal-to-abnormal flips among the strongest pixels anywhere.
+
+    The Top-K support is selected from the adversarial anomaly map, identically
+    for every attack formulation. Only pixels that were cleanly predicted as
+    normal are eligible, and success requires them to cross the frozen pixel
+    threshold. This complements, rather than replaces, fixed-region success.
+    """
+
+    region = location_free_topk_region(
+        adversarial_map, topk_fraction=topk_fraction
+    )
+    result = targeted_region_pixel_metrics(
+        clean_map,
+        adversarial_map,
+        region,
+        threshold=threshold,
+        source_label=0,
+        target_label=1,
+        minimum_flip_fraction=minimum_flip_fraction,
+    )
+    return {
+        "location_free_topk_pixel_count": result["target_region_pixel_count"],
+        "location_free_topk_pixel_eligible_count": result[
+            "target_region_pixel_eligible_count"
+        ],
+        "location_free_topk_pixel_flip_count": result[
+            "target_region_pixel_flip_count"
+        ],
+        "location_free_topk_pixel_flip_rate": result[
+            "target_region_pixel_flip_rate"
+        ],
+        "location_free_topk_pixel_success_eligible": result[
+            "target_region_pixel_success_eligible"
+        ],
+        "location_free_topk_pixel_attack_success": result[
+            "target_region_pixel_attack_success"
+        ],
+    }
+
+
 def resize_anomaly_maps(lowres_maps: Sequence[np.ndarray], size: int, sigma: float) -> np.ndarray:
     tensor = torch.as_tensor(np.stack(lowres_maps), dtype=torch.float32)[:, None]
     resized = F.interpolate(tensor, size=(size, size), mode="bilinear", align_corners=False)[:, 0].numpy()

@@ -53,19 +53,15 @@ comparable. The formulation appears as a `loss_formulation` column in
 `ablation_high_level_summary.csv`, with the `K` actually used recorded next to it
 as `margin_topk_fraction`.
 
-Because `margin_topk` never constrains where the fake abnormal region appears,
-its `normal_to_abnormal` pixel-success numbers are a conservative lower bound:
-the evaluator still scores only the fixed central region, so a fake defect
-planted off-center counts as a pixel failure even when the attack worked. That
-region is `NORMAL_TARGET_REGION_FRACTION` of each side, so the default 0.25 is a
-130x130 box, about 6.3% of the image area, while `K=0.20` spreads the fake
-anomaly over about 20% of the area. A broad fake defect therefore tends to
-overlap the scored box anyway; a smaller `K` concentrates the attack but makes
-its placement matter more. The same box is what `ce_focal_dice` optimizes
-against, so that one metric is tilted in its favour by construction. Image-level
-metrics and the threshold-free pixel metrics (P-AUROC, AUPRO) carry no such
-caveat, and `abnormal_to_normal` is unaffected in every metric because it is
-scored inside the ground-truth defect mask.
+For `normal_to_abnormal`, evaluation now reports both the original fixed-centre
+pixel success and a shared location-free Top-K success. The latter selects the
+highest anomaly-score pixels anywhere in the adversarial map, using
+`LOCATION_FREE_TOPK_FRACTION=0.20` by default, and applies the same selection,
+threshold, and success rule to both loss formulations. This makes the
+location-independent comparison fair without removing the fixed-location
+question that `ce_focal_dice` was designed to answer. For
+`abnormal_to_normal`, the primary pixel metric remains restricted to the
+ground-truth defect mask because success means suppressing the real defect.
 
 `K` is a fixed hyperparameter per direction, not an ablation axis: two runs with
 different `K` produce the same delta filenames and condition names, so sweep it
@@ -88,17 +84,22 @@ datasets. They are frozen before adversarial evaluation.
 
 ## Pixel success definition
 
-Pixel success is separate from image-level targeted success. For
-normal-to-abnormal, only the fixed central target region is evaluated. For
-abnormal-to-normal, only the ground-truth defect mask is evaluated. A pixel is
-eligible only if its clean prediction is the source class. An image is a pixel
-success when at least 50% of eligible target-region pixels flip to the target
-class. This fraction is configurable with
-`PIXEL_SUCCESS_MIN_FLIP_FRACTION`.
+Pixel success is separate from image-level targeted success. The original
+target-region metric evaluates the fixed central square for normal-to-abnormal
+and the ground-truth defect mask for abnormal-to-normal. The additional
+normal-to-abnormal location-free metric evaluates the strongest Top-K pixels
+anywhere in the adversarial map. A pixel is eligible only if its clean
+prediction is the source class. An image is a success when at least 50% of its
+eligible scored pixels flip to the target class. The success fraction is
+configured by `PIXEL_SUCCESS_MIN_FLIP_FRACTION`, and the location-free area by
+`LOCATION_FREE_TOPK_FRACTION`.
+The summary CSV reports both category-macro and count-weighted micro versions
+of the location-free flip rate and pixel ASR.
 
 Visualizations are generated independently under every pixel-threshold folder.
-They are selected by target-region pixel flip rate and are intended for
-debugging, not as formal benchmark evidence.
+Normal-to-abnormal samples are selected by location-free Top-K pixel flip rate;
+abnormal-to-normal samples use ground-truth-region flip rate. Visualizations
+are intended for debugging, not as formal benchmark evidence.
 
 ## Run on a server
 
